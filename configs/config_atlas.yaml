@@ -74,7 +74,7 @@ inr_decoder:
   cnn_kernel_size: 3 # kernel size for the CNN for spatial modulation, if 0 no CNN is used
   latent_dim: [256, 3, 3, 3] # latent code dimension, [latent_dim, X, Y, Z]
   in_dim: 3 # input dimension of the coordinates, e.g. 3 for 3D images
-  out_dim: [1, 8] #(number of modalities (not counting segmentation), number of segmentation channels)
+  out_dim: [1, 11] #(number of modalities (not counting segmentation), number of segmentation channels)
   hidden_size: 1024 # hidden size of the MLP
   num_hidden_layers: 5 # number of hidden layers of the MLP
   modulated_layers: [1, 3, 5] # layers that are modulated by the latent code
@@ -85,15 +85,11 @@ inr_decoder:
 atlas_gen:
   #spacing: [1.5, 1.5, 1.5] # spacing of the atlas in mm
   spacing: [1, 1, 1]
-  temporal_values: [20, 30, 40, 50, 60, 70, 80] # steps in the temporal dimension (scan age_min, scan age_max)
+  temporal_values: [20, 30, 40, 50, 60, 70, 80, 90] # steps in the temporal dimension (scan age_min, scan age_max)
   conditions: # conditions to use for the atlas generation (must be specified and activated in config_data.yaml)
-  # the condtions are combined with each temporal values --> exponential increase of combinations with each condition!!
-    # birth_age: # condition name as stated in config_data.yaml
-    #   values: [26, 31, 36, 41] # values to combine with the temporal values
-    #   normed_values: False # if False, steps are specified in dataframe values, i.e., not normalized
-    # lv_volume_normed:
-    #   values: [-1.25, -0.75, 0, 0.75, 1.25]
-    #   normed_values: True # if True, steps are specified in normalized values [-1, 1]
+    sex:
+      values: [0, 1] 
+      normed_values: False
     
   # --- Mean Latent Regression ---
   gaussian_span: 5.0 # in weeks. +/- weeks of scan age to cover 95% of the weights, 
@@ -118,11 +114,11 @@ latent_anaylsis: # to predict scan_age from latentcode or explciit conditions du
 # --------- Training Parameters ---------
 n_subjects: # number of subjects to use for training/validation
   train: 100 #92
-  val: 1 #52
+  val: 2 #52
 epochs: # number of epochs for training/validation
   train: 1000
-  val: 1 # the num epochs for latent code optimization, redone for each validation cycle)
-validate_every: 1
+  val: 5 # the num epochs for latent code optimization, redone for each validation cycle)
+validate_every: 5
 batch_size: 4 # batch size for training/validation (number of subjects per batch)
-n_samples: 50000 # number of coordinates in each "inner_batch" sampled across the subejct batch
+n_samples: 200000 # number of coordinates in each "inner_batch" sampled across the subejct batch
 num_workers: 8 # number of workers for dataloader

@@ -33,16 +33,30 @@ class AtlasBuilder:
         self.train_on_data()
 
     def train_on_data(self):
-        if len(self.args['load_model']['path']) > 0: self.validate(epoch_train=0) 
+        # 如果加载了预训练模型，先验证一次（这一行保持不变）
+        if len(self.args['load_model']['path']) > 0: 
+            self.validate(epoch_train=0) 
+            
         loss_hist_epochs = []
         start_time = time.time()
-        for epoch in range(self.args['epochs']['train']):
-            if self.args['optimizer']['re_init_latents']: self.re_init_latents()
+        
+        # 获取总 Epoch 数
+        total_epochs = self.args['epochs']['train']
+        
+        for epoch in range(total_epochs):
+            if self.args['optimizer']['re_init_latents']: 
+                self.re_init_latents()
+                
             loss = self.train_epoch(epoch, split='train')
             loss_hist_epochs.append(loss)
+            
             print(f"Training: Epoch: {epoch}, Loss: {np.mean(loss_hist_epochs):.4f}, Total Time Epoch: {time.time() - start_time:.2f}s")
-            self.validate(epoch) 
+     
+            if epoch > 0 and (epoch % self.args['validate_every'] == 0 or epoch == total_epochs - 1):
+                self.validate(epoch) 
+                
             self._update_scheduler(split='train')
+            
         return np.mean(loss_hist_epochs)
 
     def train_epoch(self, epoch, split):
@@ -220,35 +234,51 @@ class AtlasBuilder:
         return metrics
 
     def generate_atlas(self, epoch=0, n_max=100):
-        """
-        Generate temporal atlas for each condition combination in self.args['atlas_gen']['conditions'].
-        """
-        print(f"Generating atlases (depending on resolution and number of atlases this may take some time) ...\n")
-        self.inr_decoder['train'].eval()
-        grid_coords, grid_shape, affine = generate_world_grid(self.args, device=self.device)
-        temp_steps = self.args['atlas_gen']['temporal_values']
-        atlas_list = []
-        with torch.no_grad():
-            for temp_step in temp_steps:
-                temp_step_normed = normalize_condition(self.args, 'scan_age', temp_step)
-                mean_latent = self.get_mean_latent('scan_age', temp_step_normed, n_max=n_max)
-                condition_vectors = generate_combinations(self.args, self.args['atlas_gen']['conditions'])
-                cond_list = []
-                for c_v in condition_vectors:
-                    c_v = torch.tensor(c_v, dtype=torch.float32).to(self.device)
-                    values_p = self.inr_decoder['train'].inference(grid_coords, mean_latent, c_v, 
-                                                                   grid_shape, None)
-                    seg = values_p[:, :, :, -1]
-                    seg[seg==4] = 0
-                    values_p[:, :, :, -1] = seg
-                    cond_list.append(values_p.detach().cpu())
-                    # free up GPU memory
-                    torch.cuda.empty_cache()
+            """
+            Generate temporal atlas for each condition combination.
+            [Fixed] Removed .item() to fix AttributeError.
+            """
+            print(f"Generating atlases (depending on resolution and number of atlases this may take some time) ...\n")
+            self.inr_decoder['train'].eval()
+            grid_coords, grid_shape, affine = generate_world_grid(self.args, device=self.device)
+            temp_steps = self.args['atlas_gen']['temporal_values']
+            atlas_list = []
+            
+            with torch.no_grad():
+                for temp_step in temp_steps:
+                    # 1. 计算归一化的年龄 (scan_age)
+                    # normalize_condition 返回的是 float (如果输入是 float)
+                    temp_step_normed = normalize_condition(self.args, 'scan_age', temp_step)
+                    mean_latent = self.get_mean_latent('scan_age', temp_step_normed, n_max=n_max)
                     
-                atlas_list.append(torch.stack(cond_list, dim=-1))
-        atlas_list = torch.stack(atlas_list, dim=-1) # [x, y, z, num_modalities, num_conditions, t]
-        save_atlas(self.args, atlas_list, affine, temp_steps, condition_vectors, epoch=epoch)
-        return atlas_list
+                    # 2. 生成其他条件组合 (如 Sex)
+                    condition_vectors = generate_combinations(self.args, self.args['atlas_gen']['conditions'])
+                    
+                    cond_list = []
+                    for c_v in condition_vectors:
+                        # [核心修复] 将 scan_age 拼接到条件向量中
+                        # 如果 scan_age 是第一个条件
+                        if self.args['dataset']['conditions'].get('scan_age', False):
+                            # 修正点：直接使用 temp_step_normed，不要加 .item()
+                            c_v = [temp_step_normed] + c_v
+                        
+                        # 转为 tensor
+                        c_v = torch.tensor(c_v, dtype=torch.float32).to(self.device)
+                        
+                        # 推理
+                        values_p = self.inr_decoder['train'].inference(grid_coords, mean_latent, c_v, 
+                                                                    grid_shape, None)
+                        seg = values_p[:, :, :, -1]
+                        seg[seg==4] = 0
+                        values_p[:, :, :, -1] = seg
+                        cond_list.append(values_p.detach().cpu())
+                        torch.cuda.empty_cache()
+                        
+                    atlas_list.append(torch.stack(cond_list, dim=-1))
+                    
+            atlas_list = torch.stack(atlas_list, dim=-1) 
+            save_atlas(self.args, atlas_list, affine, temp_steps, condition_vectors, epoch=epoch)
+            return atlas_list
     
     def get_mean_latent(self, condition_key, condition_mean, n_max=100, split='train'):
         """

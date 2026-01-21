@@ -18,17 +18,39 @@ class Data(Dataset):
         self.world_bbox = np.array(self.args['dataset']['world_bbox'])
         self.tsv_file = tsv_file
         self.df = self.filter_dataframe(self.tsv_file) if df_loaded is None else df_loaded
+        
+        # [修改 1] 开启内存缓存
+        # 只要内存足够，这将显著加速第二轮 Epoch 之后的训练
+        self.cache = {}
+        self.use_cache = False 
+        if self.split == 'train':
+            print(f"[{split}] Data Caching Enabled: {self.use_cache}")
+
         self._init_data_augmentation()
 
     def __len__(self):
         return len(self.df)
     
     def __getitem__(self, idx):
-        row_dict = self.df.iloc[idx].to_dict()
-        modalities = self.load_modalities(row_dict)
+        # [修改 2] 缓存读取逻辑
+        # 如果开启缓存且已存在，直接使用（避免重复 IO 和 预处理）
+        if self.use_cache and idx in self.cache:
+            modalities = self.cache[idx]
+        else:
+            row_dict = self.df.iloc[idx].to_dict()
+            modalities = self.load_modalities(row_dict)
+            if self.use_cache:
+                self.cache[idx] = modalities # 存入缓存
+
+        # 注意：load_coords_and_values 内部会调用 augment_modalities
+        # augment 是随机的，所以每次即使输入同样的 modalities，输出的 coords/values 也会不同（符合预期）
         coords, values = self.load_coords_and_values(modalities)
+        
         coords = torch.tensor(coords, dtype=torch.float32)
         values = torch.tensor(values, dtype=torch.float32)
+        
+        # 获取 conditions (需要重新获取 row_dict 因为缓存里只存了 modalities)
+        row_dict = self.df.iloc[idx].to_dict()
         conditions = self.load_conditions(row_dict)[None, :].expand(coords.shape[0], -1)
         idx_df = torch.tensor(idx, dtype=torch.int32).unsqueeze(0).expand(coords.shape[0], -1)
         return coords, values, conditions, idx_df
@@ -81,97 +103,116 @@ class Data(Dataset):
         return modalities
 
     def load_coords_and_values(self, modalities, normalize=True):
-        modalities_data = self.augment_modalities(modalities)
-        # 假设 modality_keys[0] 是灰度图(MRA/T2w)，[-1] 是 Segmentation
-        mra_data = modalities_data[self.modality_keys[0]]
-        seg_data = modalities_data[self.modality_keys[-1]]
-        affine = modalities[self.modality_keys[-1]].affine
+            # 1. 数据增强与加载
+            modalities_data = self.augment_modalities(modalities)
+            mra_data = modalities_data[self.modality_keys[0]]
+            seg_data = modalities_data[self.modality_keys[-1]]
+            affine = modalities[self.modality_keys[-1]].affine
+            img_shape = mra_data.shape
 
-        # --------------------------------------------------------------
-        # 1. 通用前景采样 (Generic Foreground Sampling)
-        # --------------------------------------------------------------
-        # 逻辑：只要 Label > 0，就是前景 (不管是血管还是脑组织)
-        # 这适配 config 中定义的任意数量的 Label
-        vessel_indices = np.argwhere(seg_data > 0)
-        
-        # --------------------------------------------------------------
-        # 2. 通用背景采样 (Generic Background Sampling)
-        # --------------------------------------------------------------
-        # 逻辑：Label == 0 是背景。
-        # 改进：采用“分层采样”策略，同时覆盖“空气”和“未标记组织”
-        n_vessel = len(vessel_indices)
-        target_n_bg = int(n_vessel * 4) 
-        target_n_bg = max(target_n_bg, 20000) 
-
-        # 计算一个简单的亮度阈值，区分背景中的“空气”和“实体”
-        # 取前景区域的中位数作为参考，取其 10%-20% 作为空气阈值
-        if len(vessel_indices) > 0:
-            # 这种写法比 percentile 快，且足够鲁棒
-            fg_mean = np.mean(mra_data[seg_data > 0])
-            air_threshold = fg_mean * 0.1 
-        else:
-            air_threshold = 0.01 # Fallback
-
-        # [Pool A] 亮背景 (Likely Tissue): Label=0 但有信号 (针对 IXI 的脑组织)
-        bg_tissue_mask = (seg_data == 0) & (mra_data > air_threshold)
-        bg_tissue_indices = np.argwhere(bg_tissue_mask)
-
-        # [Pool B] 暗背景 (Likely Air): Label=0 且无信号 (针对 FeTA 的去雾)
-        bg_air_mask = (seg_data == 0) & (mra_data <= air_threshold)
-        bg_air_indices = np.argwhere(bg_air_mask)
-
-        # 执行混合采样
-        selected_bg_indices = []
-        
-        # 如果两种背景都存在 (比如 IXI)，各采一半
-        if len(bg_tissue_indices) > 0 and len(bg_air_indices) > 0:
-            n_tissue = target_n_bg // 2
-            n_air = target_n_bg - n_tissue
+            # --------------------------------------------------------------
+            # 2. 前景采样 (Vessel) - 保持 argwhere
+            # --------------------------------------------------------------
+            vessel_indices = np.argwhere(seg_data > 0)
+            n_vessel = len(vessel_indices)
             
-            # 采 Tissue
-            idx_tissue = np.random.choice(len(bg_tissue_indices), min(len(bg_tissue_indices), n_tissue), replace=False)
-            selected_bg_indices.append(bg_tissue_indices[idx_tissue])
-            
-            # 采 Air
-            idx_air = np.random.choice(len(bg_air_indices), min(len(bg_air_indices), n_air), replace=False)
-            selected_bg_indices.append(bg_air_indices[idx_air])
-            
-        # 如果只有一种背景 (比如 FeTA，Tissue 都在前景里了，背景全是 Air)，那就全采它
-        elif len(bg_tissue_indices) > 0:
-            idx = np.random.choice(len(bg_tissue_indices), min(len(bg_tissue_indices), target_n_bg), replace=False)
-            selected_bg_indices.append(bg_tissue_indices[idx])
-        elif len(bg_air_indices) > 0:
-            idx = np.random.choice(len(bg_air_indices), min(len(bg_air_indices), target_n_bg), replace=False)
-            selected_bg_indices.append(bg_air_indices[idx])
-            
-        if len(selected_bg_indices) > 0:
-            selected_bg_indices = np.vstack(selected_bg_indices)
-        else:
-            # 极个别情况下的保底 (全图都是前景?)
-            selected_bg_indices = np.argwhere(seg_data == 0) # Fallback
+            # 设定背景采样总目标
+            target_n_bg = int(n_vessel * 4) 
+            target_n_bg = max(target_n_bg, 20000) 
 
-        # --------------------------------------------------------------
-        # 3. 合并与坐标计算 (保持原有逻辑)
-        # --------------------------------------------------------------
-        c_nz = np.vstack((vessel_indices, selected_bg_indices))
-        values = np.stack([modalities_data[mod][c_nz[:, 0], c_nz[:, 1], c_nz[:, 2]].flatten() 
-                            for mod in self.modality_keys], axis=-1)
-        
-        # 使用图像的几何中心，而不是血管质心
-        c_nz_phys = nib.affines.apply_affine(affine, c_nz)
-        
-        img_shape = np.array(mra_data.shape)
-        img_center_index = img_shape / 2.0
-        geometric_center = nib.affines.apply_affine(affine, img_center_index)
-        
-        coords = c_nz_phys - geometric_center
-        
-        if normalize:
-            wb_center = self.world_bbox / 2
-            coords = (coords / wb_center) 
-            values = normalize_intensities(values, self.args['dataset']['normalize_values'])
+            # --------------------------------------------------------------
+            # 3. 背景采样 (极速拒绝采样)
+            # --------------------------------------------------------------
+            if n_vessel > 0:
+                fg_mean = np.mean(mra_data[seg_data > 0])
+                air_threshold = fg_mean * 0.1 
+            else:
+                air_threshold = 0.01
+
+            selected_bg_indices = []
             
-        return coords, values
+            # 估算需要的随机点数量 (4倍冗余)
+            n_candidates = target_n_bg * 4
+            rand_coords = np.random.randint(0, [img_shape[0], img_shape[1], img_shape[2]], size=(n_candidates, 3))
+            
+            # 批量获取像素值
+            vals_mra = mra_data[rand_coords[:,0], rand_coords[:,1], rand_coords[:,2]]
+            vals_seg = seg_data[rand_coords[:,0], rand_coords[:,1], rand_coords[:,2]]
+            
+            # 分类筛选
+            is_bg = (vals_seg == 0)
+            mask_tissue = is_bg & (vals_mra > air_threshold)
+            mask_air = is_bg & (vals_mra <= air_threshold)
+            
+            pool_tissue = rand_coords[mask_tissue]
+            pool_air = rand_coords[mask_air]
+
+            # 执行分层配额
+            if len(pool_tissue) > 0 and len(pool_air) > 0:
+                n_tissue_target = target_n_bg // 2
+                n_air_target = target_n_bg - n_tissue_target
+                
+                if len(pool_tissue) >= n_tissue_target:
+                    selected_bg_indices.append(pool_tissue[:n_tissue_target])
+                else:
+                    selected_bg_indices.append(pool_tissue)
+                    
+                if len(pool_air) >= n_air_target:
+                    selected_bg_indices.append(pool_air[:n_air_target])
+                else:
+                    selected_bg_indices.append(pool_air)
+                    
+            elif len(pool_tissue) > 0:
+                selected_bg_indices.append(pool_tissue[:target_n_bg])
+            elif len(pool_air) > 0:
+                selected_bg_indices.append(pool_air[:target_n_bg])
+                
+            # 保底逻辑
+            if len(selected_bg_indices) == 0:
+                fallback = np.argwhere(seg_data == 0)
+                if len(fallback) > 0:
+                    indices = np.random.choice(len(fallback), min(len(fallback), target_n_bg))
+                    selected_bg_indices.append(fallback[indices])
+            else:
+                selected_bg_indices = np.vstack(selected_bg_indices)
+
+            # --------------------------------------------------------------
+            # 4. [修复这里] 先合并前景和背景，定义 c_nz
+            # --------------------------------------------------------------
+            if len(selected_bg_indices) > 0:
+                c_nz = np.vstack((vessel_indices, selected_bg_indices))
+            else:
+                c_nz = vessel_indices
+
+            # --------------------------------------------------------------
+            # 5. 强制截断 (Hard Clamping) - 防止 CPU 爆炸
+            # --------------------------------------------------------------
+            max_points_per_subject = 4000000 
+            
+            if len(c_nz) > max_points_per_subject:
+                # 随机打乱并截取前 N 个
+                perm = np.random.permutation(len(c_nz))
+                c_nz = c_nz[perm[:max_points_per_subject]]
+
+            # --------------------------------------------------------------
+            # 6. 提取值与坐标计算
+            # --------------------------------------------------------------
+            values = np.stack([modalities_data[mod][c_nz[:, 0], c_nz[:, 1], c_nz[:, 2]].flatten() 
+                                for mod in self.modality_keys], axis=-1)
+            
+            # 几何中心对齐
+            c_nz_phys = nib.affines.apply_affine(affine, c_nz)
+            img_center_index = np.array(img_shape) / 2.0
+            geometric_center = nib.affines.apply_affine(affine, img_center_index)
+            
+            coords = c_nz_phys - geometric_center
+            
+            if normalize:
+                wb_center = self.world_bbox / 2
+                coords = (coords / wb_center) 
+                values = normalize_intensities(values, self.args['dataset']['normalize_values'])
+                
+            return coords, values
 
 
     def augment_modalities(self, modalities):

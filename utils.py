@@ -198,9 +198,24 @@ def to_device(x, device='cuda'):
 
 def normalize_condition(args, condition_key, condition_values, cond_scale=None):
     c_scale = args['atlas_gen']['cond_scale'] if cond_scale is None else cond_scale
-    c_min = args['dataset']['constraints'][condition_key]['min']
-    c_max = args['dataset']['constraints'][condition_key]['max']
-    cv = 2 * ((condition_values - c_min) / (c_max - c_min) - 0.5)
+    constraint = args['dataset']['constraints'][condition_key]
+    
+    # [修复] 自动判断变量类型
+    if constraint.get('type') == 'categoric':
+        # 分类变量：min=0, max=类别数量-1 (因为它们被转成了索引 0, 1, 2...)
+        c_min = 0.0
+        c_max = float(len(constraint['values']) - 1)
+    else:
+        # 数值变量：直接读取 min/max
+        c_min = constraint['min']
+        c_max = constraint['max']
+
+    # 防止除以零 (如果只有一个值)
+    if c_max > c_min:
+        cv = 2 * ((condition_values - c_min) / (c_max - c_min) - 0.5)
+    else:
+        cv = 0.0
+        
     cv = cv * c_scale
     return cv
 
@@ -872,15 +887,23 @@ def normalize_intensities(values, norm_type):
 def denormalize_conditions(args, cond_key, values):
     """
     Denormalize values according to the constraints in the dataset
-    Args:
-        args: arguments
-        cond_key: key of the condition in the dataset
-        values: numpy array of shape (n_samples, n_modalities)
-    Returns:
-        denormalized_values: numpy array of shape (n_samples, n_modalities)
     """
-    c_min = args['dataset']['constraints'][cond_key]['min']
-    c_max = args['dataset']['constraints'][cond_key]['max']
+    constraint = args['dataset']['constraints'][cond_key]
+    
+    # [修复] 自动判断变量类型
+    if constraint.get('type') == 'categoric':
+        c_min = 0.0
+        c_max = float(len(constraint['values']) - 1)
+    else:
+        c_min = constraint['min']
+        c_max = constraint['max']
+        
     c_scale = args['atlas_gen']['cond_scale']
-    values = (values / c_scale + 1) / 2 * (c_max - c_min) + c_min
+    
+    # 防止除以零
+    if c_max > c_min:
+        values = (values / c_scale + 1) / 2 * (c_max - c_min) + c_min
+    else:
+        values = values * 0 + c_min # 保持原值
+        
     return values
