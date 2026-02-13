@@ -188,23 +188,23 @@ class AtlasBuilderDDP:
         metrics_train = self.generate_subjects_from_df(idcs_df=train_indices, epoch=epoch_train, split='train')
         log_metrics(self.args, metrics_train, epoch_train, df=self.datasets['train'].df, split='train')
 
-        self._init_validation() 
+        # self._init_validation() 
         
-        # Val 阶段也是同样逻辑，只有 Rank 0 跑
-        # 如果需要在 Val 阶段做 Test-Time Optimization (TTO)，
-        # 必须确保 Val 阶段也用 DDP 或者只用单卡跑 Val。
-        # 鉴于 Val 数据量通常小，这里让 Rank 0 独占跑 Val 比较简单
+        # # Val 阶段也是同样逻辑，只有 Rank 0 跑
+        # # 如果需要在 Val 阶段做 Test-Time Optimization (TTO)，
+        # # 必须确保 Val 阶段也用 DDP 或者只用单卡跑 Val。
+        # # 鉴于 Val 数据量通常小，这里让 Rank 0 独占跑 Val 比较简单
         
-        for epoch_val in range(self.args['epochs']['val']):
-            # 注意：这里的 train_epoch 调用的是 split='val'
-            # 因为 _init_validation 中没有用 DDP Sampler，所以其实是单卡跑
-            self.train_epoch(epoch=epoch_val, split='val') 
-            self._update_scheduler(split='val') 
-            self.analyze_latent_space(epoch_train, epoch_val=epoch_val)
+        # for epoch_val in range(self.args['epochs']['val']):
+        #     # 注意：这里的 train_epoch 调用的是 split='val'
+        #     # 因为 _init_validation 中没有用 DDP Sampler，所以其实是单卡跑
+        #     self.train_epoch(epoch=epoch_val, split='val') 
+        #     self._update_scheduler(split='val') 
+        #     self.analyze_latent_space(epoch_train, epoch_val=epoch_val)
             
-        metrics_val = self.generate_subjects_from_df(idcs_df=range(len(self.datasets['val'])), 
-                                                    epoch=epoch_val, split='val')
-        log_metrics(self.args, metrics_val, epoch_train, df=self.datasets['val'].df, split='val')
+        # metrics_val = self.generate_subjects_from_df(idcs_df=range(len(self.datasets['val'])), 
+        #                                             epoch=epoch_val, split='val')
+        # log_metrics(self.args, metrics_val, epoch_train, df=self.datasets['val'].df, split='val')
 
     def _init_inr(self, state_dict=None, split='train'):
         self.args['inr_decoder']['cond_dims'] = sum([self.args['dataset']['conditions'][c] 
