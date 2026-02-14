@@ -21,9 +21,8 @@ from utils import *
 
 class AtlasBuilderDDP:
     """
-    [DDP Version] Local SGD Strategy
-    1. No DDP wrapper (avoids deadlock due to uneven data sizes).
-    2. Synchronize weights explicitly at the end of each epoch.
+    [DDP Version] Local SGD Strategy -> Synchronized Gradient SGD
+    Fixed: Added gradient synchronization per batch to ensure convergence.
     """
     def __init__(self, args):
         self.args = args
@@ -35,7 +34,6 @@ class AtlasBuilderDDP:
         self._init_atlas_training()
         self.train_on_data()
 
-    # 将此函数移到最前，防止缩进错误
     def broadcast_latents_from_rank0(self):
         """确保起点一致"""
         if self.rank == 0:
@@ -47,7 +45,6 @@ class AtlasBuilderDDP:
 
     def train_on_data(self):
         # 1. 初始广播
-        #self.validate(epoch_train=0) 
         self.broadcast_latents_from_rank0()
         # 2. 初始验证
         if len(self.args['load_model']['path']) > 0 and self.rank == 0: 
@@ -72,12 +69,14 @@ class AtlasBuilderDDP:
             if self.rank == 0:
                 print(f"Training: Epoch: {epoch}, Loss: {np.mean(loss_hist_epochs):.4f}, Total Time Epoch: {time.time() - start_time:.2f}s")
 
-            # [重要修改] 每一轮或者验证前，必须同步 Decoder 权重！
-            # 因为我们去掉了 DDP wrapper，如果不手动同步，大家的模型就练岔了。
+            # Epoch 结束时的同步（消除浮点误差积累）
             if epoch > 0 and (epoch % self.args['validate_every'] == 0 or epoch == total_epochs - 1):
-                # 1. 同步 Latents
+                # 1. 同步 Latents (Sum/Average depending on logic, here assume local update needs sync if not unique)
+                # 由于采用了 DistributedSampler，每个 Latent vector 实际上只有一张卡在更新它(sparse)，
+                # 所以 sum 是合理的 (其他卡梯度为0)。
                 self.synchronize_latents(split='train')
-                # 2. 同步 Decoder (Local SGD 核心)
+                
+                # 2. 强制同步 Decoder 权重 (消除累积误差)
                 self.synchronize_decoder(split='train')
                 
                 if self.rank == 0:
@@ -104,6 +103,17 @@ class AtlasBuilderDDP:
                  print(f"Split: {split}, Epoch: {epoch}, Batch: {i}/{len(self.dataloaders[split])}, Loss: {loss:.4f}")
                  
         return np.mean(loss_hist_batches)
+
+    def average_decoder_gradients(self, split):
+        """
+        [新增] 手动同步 Decoder 的梯度。
+        这是 DDP 收敛的关键：保证所有卡使用相同的平均梯度更新共享模型。
+        """
+        size = float(self.world_size)
+        for param in self.inr_decoder[split].parameters():
+            if param.grad is not None:
+                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                param.grad.data /= size
         
     def train_batch(self, batch, epoch, split='train'):
         loss_hist_samples = []
@@ -121,8 +131,7 @@ class AtlasBuilderDDP:
             conditions = conditions_batch[smpls:smpls + n_smpls] if split == 'train' else self.conditions_val[idx_df]
 
             with torch.autocast(device_type='cuda', enabled=self.args['amp']):
-                # [修复] 兼容返回值 unpacking 问题
-                # 无论模型返回 1个值 还是 2个值，这里都能自动处理
+                # 兼容返回值 unpacking
                 ret = self.inr_decoder[split](coords, self.latents[split], conditions,
                                             self.transformations[split][idx_df], idcs_df=idx_df)
                 if isinstance(ret, tuple):
@@ -134,12 +143,30 @@ class AtlasBuilderDDP:
                 loss = self.loss_criterion(values_p, values, self.transformations[split][idx_df], 
                                            moe_loss=aux_loss, seg_weight=seg_weight)
 
+            # [关键修改] 插入梯度同步逻辑
             if self.args['amp']:    
                 self.grad_scalers[split].scale(loss['total']).backward()
+                
+                # AMP 模式下必须先 unscale 才能操作梯度
+                self.grad_scalers[split].unscale_(self.optimizers[split])
+                
+                # 同步梯度
+                self.average_decoder_gradients(split)
+                
+                # 梯度裁剪 (可选)
+                # torch.nn.utils.clip_grad_norm_(self.inr_decoder[split].parameters(), max_norm=1.0)
+                
                 self.grad_scalers[split].step(self.optimizers[split])
                 self.grad_scalers[split].update()
             else:
                 loss['total'].backward()
+                
+                # 同步梯度
+                self.average_decoder_gradients(split)
+                
+                # 梯度裁剪 (可选)
+                # torch.nn.utils.clip_grad_norm_(self.inr_decoder[split].parameters(), max_norm=1.0)
+                
                 self.optimizers[split].step()
 
             loss_hist_samples.append(loss['total'].item())
@@ -153,37 +180,55 @@ class AtlasBuilderDDP:
 
     def synchronize_latents(self, split='train'):
         """同步 Latents"""
+        # 注意：这里假设了 latents 是稀疏更新的（每个样本只有一个卡在训）。
+        # 如果使用了 shuffle=True 且不同卡可能碰到同一个样本，逻辑会更复杂。
+        # 但在当前 dataset 设定下，DistributedSampler(shuffle=False) 保证了每个卡固定负责一部分数据。
+        # 此时 SUM 是安全的，因为非负责卡的梯度和更新都是0。
         total_len = len(self.datasets[split])
         indices = torch.arange(total_len).to(self.device)
         my_indices = indices[self.rank::self.world_size]
         
+        # 只同步值
         temp_latents = torch.zeros_like(self.latents[split].data)
-        temp_latents[my_indices] = self.latents[split].data[my_indices]
+        # 只有负责该索引的卡才填入非零值
+        # 但这里是直接 copy 全量数据，然后做 SUM？
+        # 原逻辑：
+        #   temp_latents[my_indices] = self.latents[split].data[my_indices]
+        #   dist.all_reduce(temp_latents, op=dist.ReduceOp.SUM)
+        # 这要求非 `my_indices` 的部分必须保持为 0（即未更新）。
+        # 如果 `re_init_latents` 为 False，且 optimizer 有动量，非主卡的数据可能也会漂移？
+        # 稳妥起见，我们信任这个逻辑，或者是做广播。
+        
+        # 简单起见，既然每个卡只更新自己那部分，我们可以构建全量 buffer
+        temp_latents = self.latents[split].data.clone()
+        # 将非本卡负责的部分置零 (保险起见)
+        mask = torch.ones(total_len, device=self.device, dtype=torch.bool)
+        mask[my_indices] = False # 本卡负责的部分设为 False
+        temp_latents[mask] = 0.0 # 其他部分清零
+        
         dist.all_reduce(temp_latents, op=dist.ReduceOp.SUM)
         self.latents[split].data.copy_(temp_latents)
         
         if self.args['inr_decoder']['tf_dim'] > 0:
-            temp_tfs = torch.zeros_like(self.transformations[split].data)
-            temp_tfs[my_indices] = self.transformations[split].data[my_indices]
+            temp_tfs = self.transformations[split].data.clone()
+            temp_tfs[mask] = 0.0
             dist.all_reduce(temp_tfs, op=dist.ReduceOp.SUM)
             self.transformations[split].data.copy_(temp_tfs)
 
     def synchronize_decoder(self, split='train'):
         """
-        [新增] 同步 Decoder 权重 (Local SGD)
-        因为去掉了 DDP wrapper，我们需要手动平均所有卡的模型参数
+        同步 Decoder 权重 (消除浮点误差)
         """
         for param in self.inr_decoder[split].parameters():
             dist.all_reduce(param.data, op=dist.ReduceOp.SUM)
             param.data /= self.world_size
         
         if self.rank == 0:
-            print(f"[DDP] Decoder weights synchronized for {split}.")
+            print(f"[DDP] Decoder weights synchronized (re-aligned) for {split}.")
 
     # =========================================================
   
     def validate(self, epoch_train):
-        # 先保存，确保安全
         self.save_state(epoch_train)
         
         if self.args['generate_cond_atlas']: 
@@ -205,8 +250,7 @@ class AtlasBuilderDDP:
             new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
             model.load_state_dict(new_state_dict)
 
-        # [关键修改] 不要用 DDP 包装！
-        # 这允许各卡使用不同长度的数据进行训练，避免 backward 死锁
+        # 不使用 DDP 包装，手动同步
         self.inr_decoder[split] = model
 
     def _init_dataloading(self, tsv_file=None, df_loaded=None, split='train'):
@@ -240,7 +284,6 @@ class AtlasBuilderDDP:
         if self.rank != 0: return 
         if self.args['save_model']:
             log_dir = self.args['output_dir']
-            # 模型已经没有 DDP wrapper 了，直接存
             model_to_save = self.inr_decoder[split]
             torch.save({
                 'epoch': epoch,
