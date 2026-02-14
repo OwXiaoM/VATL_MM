@@ -6,7 +6,7 @@ import wandb as wd
 import torch
 import torch.distributed as dist
 from datetime import datetime
-from datetime import timedelta  # <--- [关键] 必须导入这个，否则设置超时会报错
+from datetime import timedelta
 
 # 引入 DDP Builder
 from build_atlas_ddp import AtlasBuilderDDP  
@@ -37,23 +37,40 @@ def initial_setup(cmd_args=None):
     if cmd_args is not None:
         args = override_args(args, cmd_args)
 
+    # [关键修复] 路径同步逻辑
+    # 1. Rank 0 生成路径并创建文件夹
+    run_dir = args['output_dir'] # default
     if rank == 0:
         job_id = os.getenv("SLURM_JOB_ID", "loc")[-3:]
         time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dsetup = args['config_data']
-        run_name =f"{dsetup}_{time_stamp}_{job_id}"
-        args['output_dir'] = f"{args['output_dir']}/{run_name}"
-        os.makedirs(args['output_dir'], exist_ok=True)
-        print(f"Output directory: {args['output_dir']}")
+        run_name = f"{dsetup}_{time_stamp}_{job_id}"
+        run_dir = f"{args['output_dir']}/{run_name}"
+        os.makedirs(run_dir, exist_ok=True)
+        print(f"Output directory created: {run_dir}")
 
+    # 2. 将路径广播给所有其他 Rank，确保一致性
+    if dist.is_initialized():
+        # 使用 object list 进行广播 (支持字符串)
+        obj_container = [run_dir]
+        dist.broadcast_object_list(obj_container, src=0)
+        run_dir = obj_container[0]
+    
+    # 3. 更新 args
+    args['output_dir'] = run_dir
+
+    # 4. 只有 Rank 0 保存配置和初始化 WandB
+    if rank == 0:
         with open(os.path.join(args['output_dir'], 'config_data.yaml'), 'w') as f:
             yaml.dump(args_data, f)
         with open(os.path.join(args['output_dir'], 'config_atlas.yaml'), 'w') as f:
             yaml.dump(args_atlas, f)
         
         if args['logging']: 
+            run_name = os.path.basename(run_dir)
             wd.init(config=args, project=args['project_name'], 
                     entity=args['wandb_entity'], name=run_name)
+                    
     return args
 
 def override_args(config_args, cmd_args):
@@ -78,11 +95,8 @@ def parse_cmd_args():
     return cmd_args
 
 def main():
-    # 检查是否为 DDP 环境
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        # [设置超时] 防止部分进程启动慢导致超时，这里设为 2 小时非常安全
         dist.init_process_group(backend='nccl', timeout=timedelta(hours=2))
-        
         rank = int(os.environ['RANK'])
         local_rank = int(os.environ['LOCAL_RANK'])
         world_size = int(os.environ['WORLD_SIZE'])
@@ -100,6 +114,7 @@ def main():
     cmd_args['local_rank'] = local_rank
     cmd_args['world_size'] = world_size
     
+    # Setup args (synchronizes output_dir inside)
     args = initial_setup(cmd_args)
     
     args['device'] = device

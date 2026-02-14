@@ -604,9 +604,12 @@ class Data(Dataset):
         Print the histogram data (counts per bin) for `column_name` in `df`,
         and save a bar plot as an image. Uses 30 bins by default, or fewer if df is small.
         """
+        # [关键修改] 只有 Rank 0 允许保存文件
+        if self.args.get('rank', 0) != 0:
+            return
+
         indent = "  "
         current_cname, current_cinfo = constraint
-        # Drop NaNs if they exist
         col_data = df[current_cname].dropna().values
         if len(col_data) == 0:
             print(f"{indent}[Histogram] No data for column '{current_cname}'")
@@ -620,28 +623,16 @@ class Data(Dataset):
         if bins is None:
             bins = (c_max - c_min + 1) if (c_min is not None and c_max is not None) else 10
         edges = np.linspace(c_min, c_max, bins)
-        edges[-1] += 1e-9  # ensures inclusive of c_max
+        edges[-1] += 1e-9 
 
         counts, bin_edges = np.histogram(col_data, bins=edges)
         print(f"{indent}[Histogram] {current_cname} counts: {counts.tolist()}")
         print(f"{indent}[Histogram] {current_cname} bin_edges: {bin_edges.tolist()}")
 
-        # Save a bar plot
-        # ------------------- 修改部分开始 -------------------
-        # figsize=(宽, 高)，单位是英寸。
-        # 默认大约是 (6.4, 4.8)。
-        # 如果你想让图变得更长/更宽，可以把第一个数字改大，比如 (12, 6) 或者 (15, 6)
         plt.figure(figsize=(15, 6)) 
-        # ------------------- 修改部分结束 -------------------
-
-        # Midpoints for bar chart
         bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-        # plot ticks for every bin center, with slight rotation of the labels
         plt.bar(bin_centers, counts, width=(bin_edges[1] - bin_edges[0]) * 0.9)
         plt.xticks(bin_centers, rotation=45)
-        # plot every y-tick 
-        # 注意：如果 counts 非常大（例如几千），range(0, max+1) 会导致 y轴密密麻麻全是字
-        # 建议加个判断，只有最大值较小时才全画出来
         if max(counts) < 20:
             plt.yticks(range(0, max(counts)+1))
         
@@ -651,7 +642,7 @@ class Data(Dataset):
 
         out_path = os.path.join(self.args['output_dir'], f"hist_{current_cname}_dist_{dist_type}_{self.split}.png")
         plt.savefig(out_path, dpi=100, bbox_inches='tight')
-        plt.close()  # free memory
+        plt.close() 
         print(f"{indent}Saved histogram to {out_path}")
 
     def _init_data_augmentation(self):

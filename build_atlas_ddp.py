@@ -15,14 +15,15 @@ from torch.cuda.amp import GradScaler
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # 引用原有的模型和数据定义
-from models.inr_decoder import INR_Decoder, LatentRegressor
+from models.inr_decoder import INR_Decoder
 from data_loading.dataset import Data
 from utils import *
 
 class AtlasBuilderDDP:
     """
-    [DDP Version] Local SGD Strategy -> Synchronized Gradient SGD
-    Fixed: Added gradient synchronization per batch to ensure convergence.
+    [Standard DDP Version]
+    使用 PyTorch 官方标准 DDP 包装器。
+    Latents 作为外部输入传入网络，避免 DDP 的 sparse update 问题。
     """
     def __init__(self, args):
         self.args = args
@@ -35,7 +36,7 @@ class AtlasBuilderDDP:
         self.train_on_data()
 
     def broadcast_latents_from_rank0(self):
-        """确保起点一致"""
+        """确保起点一致 (Latents 不在 DDP 管理范围内，需手动广播)"""
         if self.rank == 0:
             print("[DDP] Broadcasting initial latents...")
         if 'train' in self.latents:
@@ -44,9 +45,9 @@ class AtlasBuilderDDP:
             dist.broadcast(self.transformations['train'].data, src=0)
 
     def train_on_data(self):
-        # 1. 初始广播
         self.broadcast_latents_from_rank0()
-        # 2. 初始验证
+        
+        # 初始验证 (仅 Rank 0)
         if len(self.args['load_model']['path']) > 0 and self.rank == 0: 
             self.validate(epoch_train=0) 
         dist.barrier()
@@ -59,6 +60,7 @@ class AtlasBuilderDDP:
             if 'train' in self.dataloaders and hasattr(self.dataloaders['train'], 'sampler'):
                 self.dataloaders['train'].sampler.set_epoch(epoch)
 
+            # 如果配置了每个 epoch 重置 latents
             if self.args['optimizer']['re_init_latents']: 
                 self.re_init_latents()
                 self.broadcast_latents_from_rank0()
@@ -69,15 +71,10 @@ class AtlasBuilderDDP:
             if self.rank == 0:
                 print(f"Training: Epoch: {epoch}, Loss: {np.mean(loss_hist_epochs):.4f}, Total Time Epoch: {time.time() - start_time:.2f}s")
 
-            # Epoch 结束时的同步（消除浮点误差积累）
+            # 验证与保存
             if epoch > 0 and (epoch % self.args['validate_every'] == 0 or epoch == total_epochs - 1):
-                # 1. 同步 Latents (Sum/Average depending on logic, here assume local update needs sync if not unique)
-                # 由于采用了 DistributedSampler，每个 Latent vector 实际上只有一张卡在更新它(sparse)，
-                # 所以 sum 是合理的 (其他卡梯度为0)。
-                self.synchronize_latents(split='train')
-                
-                # 2. 强制同步 Decoder 权重 (消除累积误差)
-                self.synchronize_decoder(split='train')
+                # 保存前同步 Latents (把各卡分散训练好的 Latents 拼起来)
+                self.synchronize_latents_gather(split='train')
                 
                 if self.rank == 0:
                     self.validate(epoch)
@@ -89,13 +86,10 @@ class AtlasBuilderDDP:
         return np.mean(loss_hist_epochs)
 
     def train_epoch(self, epoch, split):
-        self.inr_decoder[split].train() if split == 'train' else self.inr_decoder[split].eval()
+        self.inr_decoder[split].train()
         loss_hist_batches = []
         
         for i, batch in enumerate(self.dataloaders[split]):
-            # 仅 Rank 0 打印部分日志
-            if self.rank == 0 and i == 0: pass
-            
             loss = self.train_batch(batch, epoch, split)
             loss_hist_batches.append(loss)
             
@@ -104,17 +98,6 @@ class AtlasBuilderDDP:
                  
         return np.mean(loss_hist_batches)
 
-    def average_decoder_gradients(self, split):
-        """
-        [新增] 手动同步 Decoder 的梯度。
-        这是 DDP 收敛的关键：保证所有卡使用相同的平均梯度更新共享模型。
-        """
-        size = float(self.world_size)
-        for param in self.inr_decoder[split].parameters():
-            if param.grad is not None:
-                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                param.grad.data /= size
-        
     def train_batch(self, batch, epoch, split='train'):
         loss_hist_samples = []
         n_smpls = self.args['n_samples']
@@ -125,15 +108,24 @@ class AtlasBuilderDDP:
         
         for i, smpls in enumerate(sample_iterator):
             self.optimizers[split].zero_grad()
+            
             coords = coords_batch[smpls:smpls + n_smpls]
             values = values_batch[smpls:smpls + n_smpls]
             idx_df = idx_df_batch[smpls:smpls + n_smpls].squeeze()
+            
+            # 区分训练和验证的 conditions 来源
             conditions = conditions_batch[smpls:smpls + n_smpls] if split == 'train' else self.conditions_val[idx_df]
 
             with torch.autocast(device_type='cuda', enabled=self.args['amp']):
-                # 兼容返回值 unpacking
-                ret = self.inr_decoder[split](coords, self.latents[split], conditions,
-                                            self.transformations[split][idx_df], idcs_df=idx_df)
+                # 【标准 DDP】直接调用模型，DDP 会在 forward 时注册 hook，在 backward 时自动同步梯度
+                ret = self.inr_decoder[split](
+                    coords, 
+                    self.latents[split],  # Latents 作为输入传入，不属于 DDP 参数
+                    conditions,
+                    self.transformations[split][idx_df], 
+                    idcs_df=idx_df
+                )
+                
                 if isinstance(ret, tuple):
                     values_p, aux_loss = ret
                 else:
@@ -143,30 +135,13 @@ class AtlasBuilderDDP:
                 loss = self.loss_criterion(values_p, values, self.transformations[split][idx_df], 
                                            moe_loss=aux_loss, seg_weight=seg_weight)
 
-            # [关键修改] 插入梯度同步逻辑
+            # 标准 Backward & Step
             if self.args['amp']:    
                 self.grad_scalers[split].scale(loss['total']).backward()
-                
-                # AMP 模式下必须先 unscale 才能操作梯度
-                self.grad_scalers[split].unscale_(self.optimizers[split])
-                
-                # 同步梯度
-                self.average_decoder_gradients(split)
-                
-                # 梯度裁剪 (可选)
-                # torch.nn.utils.clip_grad_norm_(self.inr_decoder[split].parameters(), max_norm=1.0)
-                
                 self.grad_scalers[split].step(self.optimizers[split])
                 self.grad_scalers[split].update()
             else:
                 loss['total'].backward()
-                
-                # 同步梯度
-                self.average_decoder_gradients(split)
-                
-                # 梯度裁剪 (可选)
-                # torch.nn.utils.clip_grad_norm_(self.inr_decoder[split].parameters(), max_norm=1.0)
-                
                 self.optimizers[split].step()
 
             loss_hist_samples.append(loss['total'].item())
@@ -178,53 +153,25 @@ class AtlasBuilderDDP:
 
     # ================= [DDP Helper Functions] =================
 
-    def synchronize_latents(self, split='train'):
-        """同步 Latents"""
-        # 注意：这里假设了 latents 是稀疏更新的（每个样本只有一个卡在训）。
-        # 如果使用了 shuffle=True 且不同卡可能碰到同一个样本，逻辑会更复杂。
-        # 但在当前 dataset 设定下，DistributedSampler(shuffle=False) 保证了每个卡固定负责一部分数据。
-        # 此时 SUM 是安全的，因为非负责卡的梯度和更新都是0。
+    def synchronize_latents_gather(self, split='train'):
+        """
+        [标准做法] 使用 all_gather 或者 all_reduce 汇总 Latents。
+        因为 latents 没有被 DDP 包装，所以训练完后各卡只有自己那部分是新的。
+        """
+        # 简单粗暴做法：利用 mask 做 sum reduce (与之前逻辑一致，但这里明确是为了保存 checkpoint)
         total_len = len(self.datasets[split])
-        indices = torch.arange(total_len).to(self.device)
-        my_indices = indices[self.rank::self.world_size]
+        my_indices = torch.arange(self.rank, total_len, self.world_size, device=self.device)
         
-        # 只同步值
         temp_latents = torch.zeros_like(self.latents[split].data)
-        # 只有负责该索引的卡才填入非零值
-        # 但这里是直接 copy 全量数据，然后做 SUM？
-        # 原逻辑：
-        #   temp_latents[my_indices] = self.latents[split].data[my_indices]
-        #   dist.all_reduce(temp_latents, op=dist.ReduceOp.SUM)
-        # 这要求非 `my_indices` 的部分必须保持为 0（即未更新）。
-        # 如果 `re_init_latents` 为 False，且 optimizer 有动量，非主卡的数据可能也会漂移？
-        # 稳妥起见，我们信任这个逻辑，或者是做广播。
-        
-        # 简单起见，既然每个卡只更新自己那部分，我们可以构建全量 buffer
-        temp_latents = self.latents[split].data.clone()
-        # 将非本卡负责的部分置零 (保险起见)
-        mask = torch.ones(total_len, device=self.device, dtype=torch.bool)
-        mask[my_indices] = False # 本卡负责的部分设为 False
-        temp_latents[mask] = 0.0 # 其他部分清零
-        
+        temp_latents[my_indices] = self.latents[split].data[my_indices]
         dist.all_reduce(temp_latents, op=dist.ReduceOp.SUM)
         self.latents[split].data.copy_(temp_latents)
         
         if self.args['inr_decoder']['tf_dim'] > 0:
-            temp_tfs = self.transformations[split].data.clone()
-            temp_tfs[mask] = 0.0
+            temp_tfs = torch.zeros_like(self.transformations[split].data)
+            temp_tfs[my_indices] = self.transformations[split].data[my_indices]
             dist.all_reduce(temp_tfs, op=dist.ReduceOp.SUM)
             self.transformations[split].data.copy_(temp_tfs)
-
-    def synchronize_decoder(self, split='train'):
-        """
-        同步 Decoder 权重 (消除浮点误差)
-        """
-        for param in self.inr_decoder[split].parameters():
-            dist.all_reduce(param.data, op=dist.ReduceOp.SUM)
-            param.data /= self.world_size
-        
-        if self.rank == 0:
-            print(f"[DDP] Decoder weights synchronized (re-aligned) for {split}.")
 
     # =========================================================
   
@@ -236,6 +183,7 @@ class AtlasBuilderDDP:
 
         print(f"Starting inference for Epoch {epoch_train}...")
         num_train = len(self.datasets['train'])
+        # 为了节省时间，只验证一部分
         train_indices = [0, 2, 3] if num_train > 3 else list(range(num_train))
         metrics_train = self.generate_subjects_from_df(idcs_df=train_indices, epoch=epoch_train, split='train')
         log_metrics(self.args, metrics_train, epoch_train, df=self.datasets['train'].df, split='train')
@@ -250,8 +198,13 @@ class AtlasBuilderDDP:
             new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
             model.load_state_dict(new_state_dict)
 
-        # 不使用 DDP 包装，手动同步
-        self.inr_decoder[split] = model
+        # 【核心修改】使用标准 DDP 包装
+        if split == 'train':
+            # find_unused_parameters=False 是关键，因为 latents 是输入，不是 DDP 参数
+            self.inr_decoder[split] = DDP(model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=False)
+        else:
+            # 验证集通常只在单卡跑，或者不需要反向传播，不包装 DDP 以方便调用 .inference()
+            self.inr_decoder[split] = model
 
     def _init_dataloading(self, tsv_file=None, df_loaded=None, split='train'):
         tsv_file = pd.read_csv(self.args['dataset']['tsv_file'], sep='\t') if tsv_file is None else tsv_file
@@ -284,7 +237,8 @@ class AtlasBuilderDDP:
         if self.rank != 0: return 
         if self.args['save_model']:
             log_dir = self.args['output_dir']
-            model_to_save = self.inr_decoder[split]
+            # 注意：保存 DDP 模型时要取 .module
+            model_to_save = self.inr_decoder[split].module if isinstance(self.inr_decoder[split], DDP) else self.inr_decoder[split]
             torch.save({
                 'epoch': epoch,
                 'latents': self.latents[split].cpu(),
@@ -296,20 +250,21 @@ class AtlasBuilderDDP:
             }, os.path.join(log_dir, f'checkpoint_epoch_{epoch}.pth'))
             print(f'Saved model state to {os.path.join(log_dir, f"checkpoint_epoch_{epoch}.pth")}')
 
-    # --- 保持其他辅助函数不变 ---
-    def generate_subject_from_latent(self, latent_vec, condition_vector, transformation=None, split='train'):
-        grid_coords, grid_shape, affine = generate_world_grid(self.args, device=self.device)
+    # --- 辅助函数 ---
+    
+    # 辅助函数：获取底层模型 (unwrap DDP)
+    def _get_raw_model(self, split='train'):
         model = self.inr_decoder[split]
-        with torch.no_grad():
-            with torch.autocast(device_type='cuda', enabled=self.args['amp']):
-                volume_inf = model.inference(grid_coords, latent_vec, condition_vector, 
-                                                        grid_shape, transformation)
-        return volume_inf
+        if isinstance(model, DDP):
+            return model.module
+        return model
 
     def generate_subjects_from_df(self, idcs_df=None, epoch=0, split='train'):
         import nibabel as nib 
         metrics = []
-        model = self.inr_decoder[split]
+        # 获取 raw model 以调用 inference 方法
+        model = self._get_raw_model(split)
+        
         def generate_native_grid(header_nii, world_bbox):
             shape = header_nii.shape
             affine = header_nii.affine
@@ -346,7 +301,8 @@ class AtlasBuilderDDP:
         return metrics
 
     def generate_atlas(self, epoch=0, n_max=100):
-        model = self.inr_decoder['train']
+        # 获取 raw model
+        model = self._get_raw_model('train')
         model.eval()
         print(f"Generating atlases...\n")
         grid_coords, grid_shape, affine = generate_world_grid(self.args, device=self.device)
@@ -418,8 +374,11 @@ class AtlasBuilderDDP:
         self._init_transformations(split='val')
         self._init_optimizer(split='val')
         model_train = self.inr_decoder['train']
-        # No DDP wrapper anymore, copy directly
-        self.inr_decoder['val'] = copy.deepcopy(model_train)
+        # 验证集不包装 DDP，直接深拷贝 module
+        if isinstance(model_train, DDP):
+            self.inr_decoder['val'] = copy.deepcopy(model_train.module)
+        else:
+            self.inr_decoder['val'] = copy.deepcopy(model_train)
         self.inr_decoder['val'].eval()
 
     def _init_transformations(self, tfs=None, split='train'):
@@ -440,7 +399,10 @@ class AtlasBuilderDDP:
     def _init_optimizer(self, split='train'):
         params = [{'name': f'latents_{split}', 'params': self.latents[split], 'lr': self.args['optimizer']['lr_latent'], 'weight_decay': self.args['optimizer']['latent_weight_decay']}]
         if self.args['inr_decoder']['tf_dim'] > 0: params.append({'name': f'transformations_{split}', 'params': self.transformations[split], 'lr': self.args['optimizer']['lr_tf'], 'weight_decay': self.args['optimizer']['tf_weight_decay']})
+        
+        # 优化器可以直接取 .parameters()，DDP 包装的模型 parameters 和原模型是一样的引用
         if split == 'train': params.append({'name': f'inr_decoder', 'params': self.inr_decoder[split].parameters(), 'lr': self.args['optimizer']['lr_inr'], 'weight_decay': self.args['optimizer']['inr_weight_decay']})
+        
         if split == 'val': params.append({'name': f'conditions_val', 'params': self.conditions_val, 'lr': self.args['optimizer']['lr_latent'], 'weight_decay': self.args['optimizer']['latent_weight_decay']})
         self.optimizers[split] = optim.AdamW(params)
         self.grad_scalers[split] = GradScaler() if self.args['amp'] else None
