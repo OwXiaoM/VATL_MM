@@ -445,8 +445,10 @@ def compute_metrics(args, pred, affine, df_row_dict, epoch, split, reg_type='Rig
              if fix_arr.max() - fix_arr.min() > 1e-6:
                  fix = (fix - fix_arr.min()) / (fix_arr.max() - fix_arr.min())
 
-        mod_pred_reg_nii = ants.to_nibabel(mov)
-        mod_ref_nii = ants.to_nibabel(fix)
+        #mod_pred_reg_nii = ants.to_nibabel(mov)
+        #mod_ref_nii = ants.to_nibabel(fix)
+        mod_pred_reg_nii = ants_to_nib(mov)
+        mod_ref_nii = ants_to_nib(fix)
         
         bbox, _ = get_bbox(mod_ref_nii) 
         x_min, y_min, z_min = bbox[0]
@@ -545,8 +547,10 @@ def reg_imgs(fix_nii, mov_nii, mask_mov_nii=None, mytx=None, reg_type='Rigid', i
         if (mov_max - mov_min) > 1e-6:
             mov_reg = (mov_reg - mov_min) / (mov_max - mov_min)
 
-    fix_nii_out = ants.to_nibabel(fix)
-    mov_reg_nii_out = ants.to_nibabel(mov_reg)
+    #fix_nii_out = ants.to_nibabel(fix)
+    #mov_reg_nii_out = ants.to_nibabel(mov_reg)
+    fix_nii_out = ants_to_nib(fix)
+    mov_reg_nii_out = ants_to_nib(mov_reg)
     
     return fix_nii_out, mov_reg_nii_out, mytx
 
@@ -638,6 +642,29 @@ def normalize_intensities(values, norm_type):
     values[..., :-1] = values_mod
     return values
 
+def ants_to_nib(ants_img):
+    """
+    Manually convert ANTs image to Nibabel image, bypassing ants.to_nibabel.
+    """
+    # 1. Get Data (ANTs stores as numpy)
+    data = ants_img.numpy().astype(np.float32)
+    
+    # 2. Reconstruct Affine Matrix
+    # ANTs stores: origin (3,), spacing (3,), direction (3x3)
+    # Affine = [Direction * diag(Spacing) | Origin]
+    
+    spacing = np.array(ants_img.spacing)
+    origin = np.array(ants_img.origin)
+    direction = np.array(ants_img.direction)
+    
+    affine = np.eye(4)
+    # Rotation & Scaling part
+    affine[:3, :3] = direction @ np.diag(spacing)
+    # Translation part
+    affine[:3, 3] = origin
+    
+    # 3. Create Nibabel Image
+    return nib.Nifti1Image(data, affine)
 
 def denormalize_conditions(args, cond_key, values):
     constraint = args['dataset']['constraints'][cond_key]

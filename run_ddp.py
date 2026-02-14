@@ -6,6 +6,7 @@ import wandb as wd
 import torch
 import torch.distributed as dist
 from datetime import datetime
+from datetime import timedelta  # <--- [关键] 必须导入这个，否则设置超时会报错
 
 # 引入 DDP Builder
 from build_atlas_ddp import AtlasBuilderDDP  
@@ -36,7 +37,6 @@ def initial_setup(cmd_args=None):
     if cmd_args is not None:
         args = override_args(args, cmd_args)
 
-    # 只在 Rank 0 创建目录和 wandb
     if rank == 0:
         job_id = os.getenv("SLURM_JOB_ID", "loc")[-3:]
         time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -54,7 +54,6 @@ def initial_setup(cmd_args=None):
         if args['logging']: 
             wd.init(config=args, project=args['project_name'], 
                     entity=args['wandb_entity'], name=run_name)
-    
     return args
 
 def override_args(config_args, cmd_args):
@@ -74,15 +73,16 @@ def parse_cmd_args():
     parser.add_argument("--config_data", type=str, help="Configuration data")
     parser.add_argument("--seed", type=int, help="Seed")
     parser.add_argument("--local-rank", type=int, default=int(os.getenv("LOCAL_RANK", -1)))
-    # 支持 torchrun 传递的参数
     args, unknown = parser.parse_known_args()
     cmd_args = {k: v for k, v in vars(args).items() if v is not None}
     return cmd_args
 
 def main():
-    # 初始化 DDP
+    # 检查是否为 DDP 环境
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        dist.init_process_group(backend='nccl')
+        # [设置超时] 防止部分进程启动慢导致超时，这里设为 2 小时非常安全
+        dist.init_process_group(backend='nccl', timeout=timedelta(hours=2))
+        
         rank = int(os.environ['RANK'])
         local_rank = int(os.environ['LOCAL_RANK'])
         world_size = int(os.environ['WORLD_SIZE'])
@@ -102,13 +102,11 @@ def main():
     
     args = initial_setup(cmd_args)
     
-    # 注入环境参数
     args['device'] = device
     args['rank'] = rank
     args['local_rank'] = local_rank
     args['world_size'] = world_size
 
-    # Logger 只在 Rank 0 开启
     if rank == 0:
         log_dir = os.path.join(args['output_dir'], 'train')
         os.makedirs(log_dir, exist_ok=True)
