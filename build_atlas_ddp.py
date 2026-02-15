@@ -200,8 +200,8 @@ class AtlasBuilderDDP:
 
         # 【核心修改】使用标准 DDP 包装
         if split == 'train':
-            # find_unused_parameters=False 是关键，因为 latents 是输入，不是 DDP 参数
-            self.inr_decoder[split] = DDP(model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=False)
+            # 改为 True！允许 MoE 中的 Expert 或部分分支在当前 Batch 不被激活
+            self.inr_decoder[split] = DDP(model, device_ids=[self.rank], output_device=self.rank, find_unused_parameters=True)
         else:
             # 验证集通常只在单卡跑，或者不需要反向传播，不包装 DDP 以方便调用 .inference()
             self.inr_decoder[split] = model
