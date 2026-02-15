@@ -546,10 +546,21 @@ class AtlasBuilder:
             self.inr_decoder[split].load_state_dict(state_dict)
 
     def _init_transformations(self, tfs=None, split='train'):
-        shape = (len(self.datasets[split]), max(self.args['inr_decoder']['tf_dim'], 6)) # at least 6 for rigid, 9 for rigid+scale
-        tfs = torch.zeros(shape).to(self.device) if tfs is None else tfs.to(self.device)
-        self.transformations[split] = nn.Parameter(tfs) if self.args['inr_decoder']['tf_dim'] > 0 else tfs # if tf_dim=0, set trafos to 0 and fix
+        tf_dim = self.args['inr_decoder']['tf_dim']
         
+        # 【安全修复】防止 tf_dim 也是 list
+        if isinstance(tf_dim, list): 
+            tf_dim = tf_dim[0]
+            
+        # 至少 6 维 (Rigid)
+        shape = (len(self.datasets[split]), max(tf_dim, 6)) 
+        
+        if tfs is None:
+            tfs = torch.zeros(shape, device=self.device)
+        else:
+            tfs = tfs.to(self.device)            
+        self.transformations[split] = nn.Parameter(tfs) if tf_dim > 0 else tfs
+
     def _init_latents(self, lats=None, split='train'):
         shape = (len(self.datasets[split]), *self.args['inr_decoder']['latent_dim'])
         lats = torch.normal(0, 0.01, size=shape).to(self.device) if lats is None else lats.to(self.device)

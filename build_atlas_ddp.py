@@ -297,22 +297,30 @@ class AtlasBuilderDDP:
         # 5. 如果是 Resume，加载优化器状态 (可选，视需求而定)
         # if checkpoint: ...
 
-    def _init_latents(self, split='train'):
-        # 初始化可学习的 Latents
+    def _init_latents(self, lats=None, split='train'):
         n_subjects = len(self.datasets[split])
         latent_dim = self.args['inr_decoder']['latent_dim']
-        tf_dim = self.args['inr_decoder']['tf_dim']
         
-        lats = torch.normal(0, 0.01, size=(n_subjects, latent_dim), device=self.device)
+        # 【关键修复】判断 latent_dim 是 list 还是 int
+        # 配置文件里通常写的是 [256]，需要解包
+        if isinstance(latent_dim, list) or isinstance(latent_dim, tuple):
+            shape = (n_subjects, *latent_dim) # 变成 (100, 256)
+        else:
+            shape = (n_subjects, latent_dim)  # 变成 (100, 256)
+        
+        # 初始化
+        if lats is None:
+            lats = torch.normal(0, 0.01, size=shape, device=self.device)
+        else:
+            lats = lats.to(self.device)
+            
         self.latents[split] = nn.Parameter(lats)
         
-        if tf_dim > 0:
-            tfs = torch.zeros(n_subjects, tf_dim, device=self.device)
-            self.transformations[split] = nn.Parameter(tfs)
-        
-        # 初始化 Val conditions (如果需要)
+        # 初始化 Val conditions
         if split == 'val': 
-             pass # 暂时省略 val 的 latent 初始化，通常 DDP 只训练 train
+            # cond_dims 通常是求和后的 int，所以这里直接用没问题
+            shape_cond_val = (len(self.datasets['val']), self.args['inr_decoder']['cond_dims'])
+            self.conditions_val = nn.Parameter(torch.normal(0, 0.01, size=shape_cond_val).to(self.device))
 
     def _init_optimizer(self, split='train'):
         params = [
