@@ -600,6 +600,9 @@ def compute_dice(pred, ref, bg_label):
     return np.mean(dice_scores)
 
 def log_metrics(args, metrics, epoch, df=None, split='train'):
+    if not metrics or len(metrics) == 0:
+        print(f"[{split}] No metrics computed. Skipping metric logging.")
+        return
     metrics_keys = list(metrics[0].keys())
     mod_keys = args['dataset']['modalities']
     for metric_key in metrics_keys:
