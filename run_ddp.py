@@ -10,7 +10,13 @@ from datetime import timedelta
 
 # 引入 DDP Builder
 from build_atlas_ddp import AtlasBuilderDDP  
-
+os.environ["OMP_NUM_THREADS"] = "1" 
+os.environ["MKL_NUM_THREADS"] = "1" 
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+# 专门针对 ANTs 的限制
+os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = "1"
 class Logger(object):
     def __init__(self, filename):
         self.terminal = sys.stdout

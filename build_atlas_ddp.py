@@ -46,7 +46,7 @@ class AtlasBuilderDDP:
 
     def train_on_data(self):
         self.broadcast_latents_from_rank0()
-        
+        self.validate(epoch_train=0) 
         # 初始验证 (仅 Rank 0)
         if len(self.args['load_model']['path']) > 0 and self.rank == 0: 
             self.validate(epoch_train=0) 
