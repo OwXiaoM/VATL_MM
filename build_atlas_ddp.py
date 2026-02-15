@@ -108,7 +108,6 @@ class AtlasBuilderDDP:
         coords_batch, values_batch, conditions_batch, idx_df_batch = to_device(batch, self.device)
         
         # 注意：这里的 idx_df_batch.shape[0] 是由 dataset.py 中的采样点数决定的。
-        # 如果 dataset.py 没有修复为固定点数，不同 Rank 的循环次数不同，会导致此处死锁。
         sample_iterator = range(0, idx_df_batch.shape[0], n_smpls)
         
         for i, smpls in enumerate(sample_iterator):
@@ -119,7 +118,7 @@ class AtlasBuilderDDP:
             
             # 处理索引
             idx_df = idx_df_batch[smpls:smpls + n_smpls].squeeze()
-            if idx_df.ndim == 0: idx_df = idx_df.unsqueeze(0) # 防止 scaler 变成 0-d
+            if idx_df.ndim == 0: idx_df = idx_df.unsqueeze(0) 
             idx_df = idx_df.long()
 
             conditions = conditions_batch[smpls:smpls + n_smpls] if split == 'train' else self.conditions_val[idx_df]
@@ -140,8 +139,12 @@ class AtlasBuilderDDP:
                     values_p = ret
                     aux_loss = None
 
-                loss = self.loss_criterion(values_p, values, self.transformations[split][idx_df], 
+                # 【修复】这里返回的是一个字典 {'total': ..., 'seg': ...}
+                loss_dict = self.loss_criterion(values_p, values, self.transformations[split][idx_df], 
                                            moe_loss=aux_loss, seg_weight=seg_weight)
+                
+                # 【修复】必须提取 'total' 标量 Tensor 才能 backward
+                loss = loss_dict['total']
 
             # Backward & Optimizer Step
             if self.args['amp']:    

@@ -620,6 +620,7 @@ class Data(Dataset):
         Print the histogram data (counts per bin) for `column_name` in `df`,
         and save a bar plot as an image. Uses 30 bins by default, or fewer if df is small.
         """
+        return
         # [关键修改] 只有 Rank 0 允许保存文件
         if self.args.get('rank', 0) != 0:
             return
