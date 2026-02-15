@@ -101,229 +101,244 @@ class Data(Dataset):
                                                                       modalities[self.modality_keys[-1]])
         
         return modalities
-        
+
     def load_coords_and_values(self, modalities, normalize=True):
         """
-        加载坐标和像素值 (通用平衡采样 + 边界过滤版)
-        策略：
-        1. 前景全采 (或截断至上限)
-        2. 背景 1:1 采样
-        3. 内存复制 (针对小数据量加速)
-        4. [核心] 过滤超出 World BBox 的点 (Discard)
+        [Final Fix] 
+        1. 保留重心对齐。
+        2. 过滤掉 World BBox 之外的点。
+        3. 【关键】在过滤之后，再次执行 Padding/Sampling，确保输出点数恒定，防止 DDP 死锁。
         """
-        # 1. 数据增强与加载
+        # 1. 数据准备
         modalities_data = self.augment_modalities(modalities)
-        # 假设 modality_keys[0] 是 MRA/T1 等灰度图，[-1] 是 Segmentation
         mra_data = modalities_data[self.modality_keys[0]]
         seg_data = modalities_data[self.modality_keys[-1]]
         affine = modalities[self.modality_keys[-1]].affine
         img_shape = mra_data.shape
 
         # ==============================================================
-        # [Step 1] 前景采样 (Foreground)
+        # [Step 1] 初始采样 (过量采样以备过滤)
         # ==============================================================
-        # 获取所有非零 Label 的坐标 (血管、脑组织等)
+        # 设定最终输出的固定点数 (必须是常数!)
+        FINAL_TARGET_POINTS = 500000 
+        
+        # 为了防止过滤后点数不够，初始采样时多采一些 (比如 1.2倍)
+        INITIAL_BUFFER = int(FINAL_TARGET_POINTS * 1.5)
+
+        # --- A. 前景 ---
         fg_indices = np.argwhere(seg_data > 0)
-        n_fg = len(fg_indices)
-
-        # 设定前景点数量上限 (防止全分辨率大图导致显存溢出)
-        # 200万点通常是 24GB 显存的安全上限
-        max_fg_points = 2000000 
+        n_fg_raw = len(fg_indices)
         
-        if n_fg > max_fg_points:
-            # 如果前景太多，随机选一部分
-            idx_fg = np.random.choice(n_fg, max_fg_points, replace=False)
-            fg_indices = fg_indices[idx_fg]
-            n_fg = max_fg_points
-
-        # ==============================================================
-        # [Step 2] 背景采样 (Background - 1:1 Balanced)
-        # ==============================================================
-        # 核心逻辑：背景数量永远等于前景数量
-        target_n_bg = n_fg 
-
-        # 随机生成候选点 (比目标多采一些，方便筛选)
-        n_candidates = int(target_n_bg * 2.5) + 10000
-        rand_coords = np.random.randint(0, [img_shape[0], img_shape[1], img_shape[2]], 
-                                        size=(n_candidates, 3))
+        # --- B. 背景 (1:1 平衡) ---
+        # 优化背景采样：随机撒点后校验，避免全图 argwhere 爆内存
+        # 只要采够差不多数量即可，后面会精确截断
+        target_bg_raw = n_fg_raw if n_fg_raw < INITIAL_BUFFER else INITIAL_BUFFER
         
-        # 筛选：只保留 Mask 为 0 的点
+        # 随机生成背景候选点
+        n_candidates = target_bg_raw * 3 + 10000
+        rand_coords = np.random.randint(0, [img_shape[0], img_shape[1], img_shape[2]], size=(n_candidates, 3))
+        
+        # 筛选背景点 (mask == 0)
         vals_seg = seg_data[rand_coords[:,0], rand_coords[:,1], rand_coords[:,2]]
-        is_bg = (vals_seg == 0)
-        selected_bg_indices = rand_coords[is_bg]
+        bg_indices = rand_coords[vals_seg == 0]
+        if len(bg_indices) > target_bg_raw:
+            bg_indices = bg_indices[:target_bg_raw]
 
-        # 截断到目标数量
-        if len(selected_bg_indices) > target_n_bg:
-            selected_bg_indices = selected_bg_indices[:target_n_bg]
-
-        # ==============================================================
-        # [Step 3] 合并数据
-        # ==============================================================
-        if len(selected_bg_indices) > 0:
-            c_nz = np.vstack((fg_indices, selected_bg_indices))
+        # --- C. 合并索引 ---
+        if len(bg_indices) > 0:
+            if n_fg_raw > 0:
+                c_nz = np.vstack((fg_indices, bg_indices))
+            else:
+                c_nz = bg_indices
         else:
             c_nz = fg_indices
-            
-        # ==============================================================
-        # [Step 4] 内存复制优化 (Memory Replication)
-        # ==============================================================
-        # 针对小尺寸图像或稀疏血管的关键优化：防止 GPU 饥饿
-        target_buffer_size = 2000000 
-        current_points = len(c_nz)
-        
-        if current_points < target_buffer_size and current_points > 0:
-            repeat_factor = target_buffer_size // current_points + 1
-            c_nz = np.tile(c_nz, (repeat_factor, 1))
-            c_nz = c_nz[:target_buffer_size] # 截断对齐
-        
-        # [重要] 必须打乱！
-        np.random.shuffle(c_nz)
+
+        # 如果通过 argwhere 拿到的点太少(比如小血管)，先进行第一轮 Padding 防止为空
+        if len(c_nz) == 0:
+             # 极少数空数据情况，随机生成一个点防止报错
+             c_nz = np.array([[img_shape[0]//2, img_shape[1]//2, img_shape[2]//2]])
 
         # ==============================================================
-        # [Step 5] 提取像素值 & 坐标归一化 & 边界过滤
+        # [Step 2] 坐标变换与重心对齐 (Center Alignment)
         # ==============================================================
-        # 1. 提取像素值
+        # 提取值
         values = np.stack([modalities_data[mod][c_nz[:, 0], c_nz[:, 1], c_nz[:, 2]].flatten() 
                             for mod in self.modality_keys], axis=-1)
         
-        # 2. 索引 -> 物理坐标
+        # 索引 -> 物理坐标
         c_nz_phys = nib.affines.apply_affine(affine, c_nz)
         
-        # 3. 计算几何中心 (与生成图谱时的逻辑保持一致)
+        # 计算几何中心 (保留算法)
         img_center_index = np.array(img_shape) / 2.0
         geometric_center = nib.affines.apply_affine(affine, img_center_index)
         
-        # 4. 中心化
+        # 中心化
         coords = c_nz_phys - geometric_center
         
-        # 5. 归一化到 [-1, 1] 范围
+        # ==============================================================
+        # [Step 3] 归一化与边界过滤 (World Size Filter)
+        # ==============================================================
         if normalize:
             wb_center = self.world_bbox / 2
             coords = (coords / wb_center) 
             
-            # === [核心修改] 过滤掉超出 [-1, 1] 范围的点 (Discard Strategy) ===
-            # 只要有一个坐标轴超出了 [-1, 1]，这个点就直接扔掉。
-            # 这样网络永远只看盒子内部，解决了大盒子数据稀疏和边界冲突的问题。
+            # 过滤掉超出 [-1, 1] 范围的点
             mask_inside = np.all(np.abs(coords) <= 1.0, axis=1)
+            
+            # 应用过滤
             coords = coords[mask_inside]
             values = values[mask_inside]
-            # ============================================================
-
-            values = normalize_intensities(values, self.args['dataset']['normalize_values'])
+        
+        # ==============================================================
+        # [Step 4] 最终定长处理 (Final Sampling/Padding)
+        # ==============================================================
+        # 经过过滤后，coords 的长度是未知的。
+        # 必须在这里强行把它变成 FINAL_TARGET_POINTS，否则 DDP 会死锁。
+        
+        current_len = coords.shape[0]
+        
+        if current_len > FINAL_TARGET_POINTS:
+            # 1. 点太多 -> 随机采样 (Downsample)
+            # 使用 numpy 的 choice 比较快
+            idx = np.random.choice(current_len, FINAL_TARGET_POINTS, replace=False)
+            coords = coords[idx]
+            values = values[idx]
             
+        elif current_len < FINAL_TARGET_POINTS:
+            # 2. 点太少 -> 重复填充 (Padding)
+            if current_len == 0:
+                # 极端情况：所有点都在 BBox 外
+                coords = torch.zeros((FINAL_TARGET_POINTS, 3), dtype=torch.float32)
+                values = torch.zeros((FINAL_TARGET_POINTS, values.shape[1]), dtype=torch.float32)
+            else:
+                repeat_factor = (FINAL_TARGET_POINTS // current_len) + 1
+                
+                # 注意：此时 coords 已经是 numpy array (float)
+                coords = np.tile(coords, (repeat_factor, 1))
+                values = np.tile(values, (repeat_factor, 1))
+                
+                # 截断
+                coords = coords[:FINAL_TARGET_POINTS]
+                values = values[:FINAL_TARGET_POINTS]
+
+        # 最终打乱一次 (Shuffle)
+        perm = np.random.permutation(FINAL_TARGET_POINTS)
+        coords = coords[perm]
+        values = values[perm]
+
         return coords, values
-
+        
     # def load_coords_and_values(self, modalities, normalize=True):
-    #     import scipy.ndimage as ndi # 确保引入了这个库
-
-    #     # 1. 加载数据
+    #     """
+    #     加载坐标和像素值 (通用平衡采样 + 边界过滤版)
+    #     策略：
+    #     1. 前景全采 (或截断至上限)
+    #     2. 背景 1:1 采样
+    #     3. 内存复制 (针对小数据量加速)
+    #     4. [核心] 过滤超出 World BBox 的点 (Discard)
+    #     """
+    #     # 1. 数据增强与加载
     #     modalities_data = self.augment_modalities(modalities)
+    #     # 假设 modality_keys[0] 是 MRA/T1 等灰度图，[-1] 是 Segmentation
     #     mra_data = modalities_data[self.modality_keys[0]]
     #     seg_data = modalities_data[self.modality_keys[-1]]
     #     affine = modalities[self.modality_keys[-1]].affine
     #     img_shape = mra_data.shape
 
-    #     # 强制清洗背景 (保险起见)
-    #     mra_data[seg_data == 0] = 0.0
+    #     # ==============================================================
+    #     # [Step 1] 前景采样 (Foreground)
+    #     # ==============================================================
+    #     # 获取所有非零 Label 的坐标 (血管、脑组织等)
+    #     fg_indices = np.argwhere(seg_data > 0)
+    #     n_fg = len(fg_indices)
+
+    #     # 设定前景点数量上限 (防止全分辨率大图导致显存溢出)
+    #     # 200万点通常是 24GB 显存的安全上限
+    #     max_fg_points = 2000000 
+        
+    #     if n_fg > max_fg_points:
+    #         # 如果前景太多，随机选一部分
+    #         idx_fg = np.random.choice(n_fg, max_fg_points, replace=False)
+    #         fg_indices = fg_indices[idx_fg]
+    #         n_fg = max_fg_points
 
     #     # ==============================================================
-    #     # [Step 1] 核心：获取血管点 (Positive Samples)
+    #     # [Step 2] 背景采样 (Background - 1:1 Balanced)
     #     # ==============================================================
-    #     vessel_mask = (seg_data > 0)
-    #     vessel_indices = np.argwhere(vessel_mask)
-    #     n_vessel = len(vessel_indices)
+    #     # 核心逻辑：背景数量永远等于前景数量
+    #     target_n_bg = n_fg 
 
-    #     # ==============================================================
-    #     # [Step 2] 关键改进：生成边界区域 (Hard Negative Mining)
-    #     # ==============================================================
-    #     # 逻辑：对血管 Mask 进行膨胀，然后减去原本的血管 Mask
-    #     # 剩下的就是紧贴着血管的那一圈“壳” (Shell)
-        
-    #     # iterations=2 表示向外扩张约 2 个像素，你可以根据需要调整(1-3均可)
-    #     dilated_mask = ndi.binary_dilation(vessel_mask, iterations=2)
-        
-    #     # 边界 = 膨胀后 有值 且 原本 无值 的地方
-    #     boundary_mask = dilated_mask & (~vessel_mask)
-    #     boundary_indices = np.argwhere(boundary_mask)
-    #     n_boundary = len(boundary_indices)
-
-    #     # ==============================================================
-    #     # [Step 3] 制定采样配额 (4:4:2 策略)
-    #     # ==============================================================
-    #     # 我们希望重点攻克边界，所以让边界点的数量接近血管点的数量
-        
-    #     target_n_boundary = int(n_vessel * 1.0) # 1:1 强攻边界
-    #     target_n_global   = int(n_vessel * 0.5) # 0.5 远场防幻觉
-        
-    #     # --- A. 采样边界点 ---
-    #     if n_boundary > 0:
-    #         if n_boundary >= target_n_boundary:
-    #             # 边界点通常很多，随机选一部分
-    #             idx = np.random.choice(n_boundary, target_n_boundary, replace=False)
-    #             selected_boundary = boundary_indices[idx]
-    #         else:
-    #             # 如果血管极细，边界点不够，就全都要
-    #             selected_boundary = boundary_indices
-    #     else:
-    #         selected_boundary = np.empty((0, 3), dtype=int)
-
-    #     # --- B. 采样远场背景 (Global) ---
-    #     # 随机撒点，只要不是血管也不是边界
-    #     n_candidates = int(target_n_global * 3) + 10000
+    #     # 随机生成候选点 (比目标多采一些，方便筛选)
+    #     n_candidates = int(target_n_bg * 2.5) + 10000
     #     rand_coords = np.random.randint(0, [img_shape[0], img_shape[1], img_shape[2]], 
     #                                     size=(n_candidates, 3))
         
-    #     # 筛选：既不是血管(dilated_mask包含了血管和边界)的点
-    #     # 也就是在 dilated_mask 之外的点
-    #     vals_dilated = dilated_mask[rand_coords[:,0], rand_coords[:,1], rand_coords[:,2]]
-    #     is_global_bg = (vals_dilated == 0)
-    #     selected_global = rand_coords[is_global_bg]
+    #     # 筛选：只保留 Mask 为 0 的点
+    #     vals_seg = seg_data[rand_coords[:,0], rand_coords[:,1], rand_coords[:,2]]
+    #     is_bg = (vals_seg == 0)
+    #     selected_bg_indices = rand_coords[is_bg]
 
-    #     if len(selected_global) > target_n_global:
-    #         selected_global = selected_global[:target_n_global]
+    #     # 截断到目标数量
+    #     if len(selected_bg_indices) > target_n_bg:
+    #         selected_bg_indices = selected_bg_indices[:target_n_bg]
 
     #     # ==============================================================
-    #     # [Step 4] 三路合并
+    #     # [Step 3] 合并数据
     #     # ==============================================================
-    #     parts = [vessel_indices]
-    #     if len(selected_boundary) > 0:
-    #         parts.append(selected_boundary)
-    #     if len(selected_global) > 0:
-    #         parts.append(selected_global)
-            
-    #     c_nz = np.vstack(parts)
+    #     if len(selected_bg_indices) > 0:
+    #         c_nz = np.vstack((fg_indices, selected_bg_indices))
+    #     else:
+    #         c_nz = fg_indices
             
     #     # ==============================================================
-    #     # [Step 5] 内存复制 (加速 IO) - 保持不变
+    #     # [Step 4] 内存复制优化 (Memory Replication)
     #     # ==============================================================
-    #     target_total_points = 5000000 
+    #     # 针对小尺寸图像或稀疏血管的关键优化：防止 GPU 饥饿
+    #     target_buffer_size = 2000000 
     #     current_points = len(c_nz)
         
-    #     if current_points < target_total_points and current_points > 0:
-    #         repeat_factor = target_total_points // current_points + 1
+    #     if current_points < target_buffer_size and current_points > 0:
+    #         repeat_factor = target_buffer_size // current_points + 1
     #         c_nz = np.tile(c_nz, (repeat_factor, 1))
-    #         c_nz = c_nz[:target_total_points]
+    #         c_nz = c_nz[:target_buffer_size] # 截断对齐
         
+    #     # [重要] 必须打乱！
     #     np.random.shuffle(c_nz)
 
     #     # ==============================================================
-    #     # [Step 6] 提取值 (保持不变)
+    #     # [Step 5] 提取像素值 & 坐标归一化 & 边界过滤
     #     # ==============================================================
+    #     # 1. 提取像素值
     #     values = np.stack([modalities_data[mod][c_nz[:, 0], c_nz[:, 1], c_nz[:, 2]].flatten() 
     #                         for mod in self.modality_keys], axis=-1)
         
+    #     # 2. 索引 -> 物理坐标
     #     c_nz_phys = nib.affines.apply_affine(affine, c_nz)
+        
+    #     # 3. 计算几何中心 (与生成图谱时的逻辑保持一致)
     #     img_center_index = np.array(img_shape) / 2.0
     #     geometric_center = nib.affines.apply_affine(affine, img_center_index)
         
+    #     # 4. 中心化
     #     coords = c_nz_phys - geometric_center
         
+    #     # 5. 归一化到 [-1, 1] 范围
     #     if normalize:
     #         wb_center = self.world_bbox / 2
     #         coords = (coords / wb_center) 
+            
+    #         # === [核心修改] 过滤掉超出 [-1, 1] 范围的点 (Discard Strategy) ===
+    #         # 只要有一个坐标轴超出了 [-1, 1]，这个点就直接扔掉。
+    #         # 这样网络永远只看盒子内部，解决了大盒子数据稀疏和边界冲突的问题。
+    #         mask_inside = np.all(np.abs(coords) <= 1.0, axis=1)
+    #         coords = coords[mask_inside]
+    #         values = values[mask_inside]
+    #         # ============================================================
+
     #         values = normalize_intensities(values, self.args['dataset']['normalize_values'])
             
     #     return coords, values
+
 
     def augment_modalities(self, modalities):
         if self.data_augmentation:
