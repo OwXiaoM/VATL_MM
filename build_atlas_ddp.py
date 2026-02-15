@@ -93,7 +93,7 @@ class AtlasBuilderDDP:
             loss = self.train_batch(batch, epoch, split)
             loss_hist_batches.append(loss)
             
-            if self.rank == 0 and (i % 50 == 0): 
+            if self.rank == 0 and (i % 10 == 0): 
                  print(f"Split: {split}, Epoch: {epoch}, Batch: {i}/{len(self.dataloaders[split])}, Loss: {loss:.4f}")
                  
         return np.mean(loss_hist_batches)
