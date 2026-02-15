@@ -207,9 +207,10 @@ class Data(Dataset):
         elif current_len < FINAL_TARGET_POINTS:
             # 2. 点太少 -> 重复填充 (Padding)
             if current_len == 0:
-                # 极端情况：所有点都在 BBox 外
-                coords = torch.zeros((FINAL_TARGET_POINTS, 3), dtype=torch.float32)
-                values = torch.zeros((FINAL_TARGET_POINTS, values.shape[1]), dtype=torch.float32)
+                # 极端情况：所有点都在 BBox 外，填充 0
+                # 修正：保持数据类型为 numpy array
+                coords = np.zeros((FINAL_TARGET_POINTS, 3), dtype=np.float32)
+                values = np.zeros((FINAL_TARGET_POINTS, values.shape[1]), dtype=np.float32)
             else:
                 repeat_factor = (FINAL_TARGET_POINTS // current_len) + 1
                 
