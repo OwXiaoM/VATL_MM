@@ -271,7 +271,7 @@ class AtlasBuilderDDP:
         self.inr_decoder = {}
         self.latents = {}
         self.conditions_val = {}
-        self.transformations = {}
+        self.transformations = {} # 虽然这里初始化了字典，但里面没数据
         self.optimizers = {}
         self.schedulers = {}
         self.grad_scalers = {}
@@ -285,18 +285,16 @@ class AtlasBuilderDDP:
             print(f"Loading model from {self.args['load_model']['path']}")
             checkpoint = torch.load(self.args['load_model']['path'], map_location=self.device)
             state_dict = checkpoint['inr_decoder']
-            # 这里可以添加 resume latents 的逻辑，如果需要的话
+            # 注意：如果需要 Resume transformations，这里还需要加载 checkpoint['transformations']
         
         # 3. 初始化 INR 模型
         self._init_inr(state_dict, split='train')
         
-        # 4. 初始化 Latents 和 优化器
+        # 4. 初始化 Latents / Transformations / 优化器
         self._init_latents(split='train')
+        self._init_transformations(split='train') # 【必须补上这行！】
         self._init_optimizer(split='train')
         
-        # 5. 如果是 Resume，加载优化器状态 (可选，视需求而定)
-        # if checkpoint: ...
-
     def _init_latents(self, lats=None, split='train'):
         n_subjects = len(self.datasets[split])
         latent_dim = self.args['inr_decoder']['latent_dim']
@@ -321,6 +319,24 @@ class AtlasBuilderDDP:
             # cond_dims 通常是求和后的 int，所以这里直接用没问题
             shape_cond_val = (len(self.datasets['val']), self.args['inr_decoder']['cond_dims'])
             self.conditions_val = nn.Parameter(torch.normal(0, 0.01, size=shape_cond_val).to(self.device))
+
+    def _init_transformations(self, tfs=None, split='train'):
+        tf_dim = self.args['inr_decoder']['tf_dim']
+        
+        # 【安全修复】防止 tf_dim 也是 list (例如 [6])
+        if isinstance(tf_dim, list) or isinstance(tf_dim, tuple):
+            tf_dim = tf_dim[0]
+            
+        # 至少 6 维 (Rigid需要6参数，即使 tf_dim=0 代码逻辑也预留了空间)
+        shape = (len(self.datasets[split]), max(tf_dim, 6)) 
+        
+        if tfs is None:
+            tfs = torch.zeros(shape, device=self.device)
+        else:
+            tfs = tfs.to(self.device)
+            
+        # 如果 tf_dim > 0 则是可学习参数，否则是固定为0的张量
+        self.transformations[split] = nn.Parameter(tfs) if tf_dim > 0 else tfs
 
     def _init_optimizer(self, split='train'):
         params = [

@@ -17,7 +17,7 @@ seed: 42
 generate_cond_atlas: True # if True, generate the spatio-temporal (conditioned) atlas 
 mask_reconstruction: True # mask inference reconstruction to remove noisy background
 save_certainty_maps: True # if True, save the certainty maps (tissue probability maps)
-compute_metrics: True # if True, compute the metrics for subject adaptation (requires GT references for each modality)
+compute_metrics: False # if True, compute the metrics for subject adaptation (requires GT references for each modality)
 save_imgs: # if True, save the reconstruction images for the training/validation set
   train: True 
   val: True
@@ -90,7 +90,7 @@ inr_decoder:
 atlas_gen:
   #spacing: [1.5, 1.5, 1.5] # spacing of the atlas in mm
   spacing: [1, 1, 1]
-  temporal_values: [20, 30, 40, 50, 60, 70, 80] # steps in the temporal dimension (scan age_min, scan age_max)
+  temporal_values: [20] # 30, 40, 50, 60, 70, 80] steps in the temporal dimension (scan age_min, scan age_max)
   conditions: # conditions to use for the atlas generation (must be specified and activated in config_data.yaml)
     sex:
       values: [0, 1] 
@@ -117,12 +117,12 @@ latent_anaylsis: # to predict scan_age from latentcode or explciit conditions du
 
 
 n_subjects: # number of subjects to use for training/validation
-  train:  526 #92
+  train:  100 #92
   val: 3 #52
 epochs: # number of epochs for training/validation
   train: 1000
   val: 5 # the num epochs for latent code optimization, redone for each validation cycle)
-validate_every: 2
+validate_every: 1
 batch_size: 20 # batch size for training/validation (number of subjects per batch)
 n_samples: 100000 # number of coordinates in each "inner_batch" sampled across the subejct batch
 num_workers: 8 # number of workers for dataloader
