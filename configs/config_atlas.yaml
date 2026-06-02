@@ -2,7 +2,7 @@ root_dir: '' # if empty, use current working directory
 
 # --------- Logging Parameters ---------
 logging: False # if True, log to wandb
-output_dir: ./tmp # directory to save the model, reconstruction images, atlases, etc.
+output_dir: /leonardo_scratch/large/userexternal/xzhang01/Cinema_output # directory to save the model, reconstruction images, atlases, etc.
 wandb_entity: # wandb entity
 project_name: CINeMA # wandb project name
 config_data: dhcp_neo_preterm_mm # name of the dataset to use (specified in config_data.yaml)
@@ -117,12 +117,13 @@ latent_anaylsis: # to predict scan_age from latentcode or explciit conditions du
 
 
 n_subjects: # number of subjects to use for training/validation
-  train:  100 #92
+  train:  553 #92
   val: 3 #52
 epochs: # number of epochs for training/validation
   train: 1000
   val: 5 # the num epochs for latent code optimization, redone for each validation cycle)
-validate_every: 1
+validate_every: 10
+save_every: 10
 batch_size: 20 # batch size for training/validation (number of subjects per batch)
 n_samples: 100000 # number of coordinates in each "inner_batch" sampled across the subejct batch
 num_workers: 8 # number of workers for dataloader
