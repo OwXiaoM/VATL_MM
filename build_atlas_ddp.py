@@ -488,16 +488,40 @@ class AtlasBuilderDDP:
 
     def load_checkpoint(self, chkp_path=None, epoch=None):  
         chkp_path = os.path.join(chkp_path, f'checkpoint_epoch_{epoch}.pth')
+    
         if not os.path.exists(chkp_path):
             raise FileNotFoundError(f'State file {chkp_path} not found!')
-        chkp = torch.load(chkp_path, weights_only=False)
-        self._init_dataloading(chkp['tsv_file'], chkp['dataset_df'])
+    
+        chkp = torch.load(chkp_path, map_location='cpu', weights_only=False)
+    
+        # Always use the current config TSV on this machine
+        current_tsv_df = pd.read_csv(self.args['dataset']['tsv_file'], sep='\t')
+    
+        # But keep the checkpoint dataset row order, because latents/transformations
+        # are indexed according to checkpoint dataset_df.
+        df_loaded = chkp.get('dataset_df', None)
+    
+        if df_loaded is not None:
+            df_loaded = self._remap_checkpoint_df_paths_to_current_tsv(df_loaded, split='train')
+        else:
+            if self.rank == 0:
+                print("[Checkpoint] No dataset_df found in checkpoint. Using current TSV filtering.")
+        
+        self._init_dataloading(
+            tsv_file=current_tsv_df,
+            df_loaded=df_loaded,
+            split='train'
+        )
+    
         self._init_inr(chkp['inr_decoder'], split='train')
-        self._init_transformations(chkp['transformations'])
-        self._init_latents(chkp['latents'])
+        self._init_transformations(chkp['transformations'], split='train')
+        self._init_latents(chkp['latents'], split='train')
+    
         if self.rank == 0:
             print(f'Loaded state from {chkp_path}')
-    
+            print(f"[Checkpoint] Current dataset TSV: {self.args['dataset']['tsv_file']}")
+            print(f"[Checkpoint] Loaded train subjects: {len(self.datasets['train'])}")
+        
     def _init_atlas_training(self):
         self.datasets, self.dataloaders = {}, {}
         self.inr_decoder, self.latents, self.transformations = {}, {}, {}
@@ -584,3 +608,97 @@ class AtlasBuilderDDP:
         torch.manual_seed(self.args['seed'])
         torch.cuda.manual_seed(self.args['seed'])
         np.random.seed(self.args['seed'])
+    
+    def _remap_checkpoint_df_paths_to_current_tsv(self, df_loaded, split='train'):
+        """
+        When loading a checkpoint trained on another machine, the checkpoint may
+        contain an old dataset_df with absolute paths, e.g. /leonardo/...
+        
+        This function checks modality paths stored in the checkpoint df.
+        If a path does not exist locally, it replaces it with the path from the
+        current config TSV by matching the file basename.
+        """
+        if df_loaded is None:
+            return None
+    
+        if not isinstance(df_loaded, pd.DataFrame):
+            if self.rank == 0:
+                print(f"[PathRemap] df_loaded is not a DataFrame: {type(df_loaded)}. Skip remapping.")
+            return df_loaded
+    
+        df_loaded = df_loaded.copy()
+    
+        current_tsv_path = self.args['dataset']['tsv_file']
+        current_df = pd.read_csv(current_tsv_path, sep='\t')
+    
+        modalities = self.args['dataset']['modalities']
+        n_fixed = 0
+        n_missing = 0
+    
+        if self.rank == 0:
+            print(f"[PathRemap] Checking checkpoint dataframe paths against current TSV:")
+            print(f"[PathRemap] current TSV = {current_tsv_path}")
+    
+        for mod_key in modalities:
+            if mod_key not in df_loaded.columns:
+                if self.rank == 0:
+                    print(f"[PathRemap][WARN] {mod_key} not found in checkpoint df. Skip.")
+                continue
+    
+            if mod_key not in current_df.columns:
+                if self.rank == 0:
+                    print(f"[PathRemap][WARN] {mod_key} not found in current TSV. Skip.")
+                continue
+    
+            # Build basename -> current local path mapping from current TSV
+            basename_to_current_path = {}
+            for p in current_df[mod_key].dropna().astype(str):
+                p = p.strip()
+                if len(p) == 0 or p.lower() == "nan":
+                    continue
+                basename_to_current_path[os.path.basename(p)] = p
+    
+            # Replace missing checkpoint paths
+            for pos, idx in enumerate(df_loaded.index):
+                old_path = df_loaded.at[idx, mod_key]
+    
+                if pd.isna(old_path):
+                    continue
+    
+                old_path = str(old_path).strip()
+                if len(old_path) == 0 or old_path.lower() == "nan":
+                    continue
+    
+                # If old path exists locally, keep it
+                if os.path.exists(old_path):
+                    continue
+    
+                old_base = os.path.basename(old_path)
+                new_path = basename_to_current_path.get(old_base, None)
+    
+                # Fallback: same row position in current TSV
+                if new_path is None and pos < len(current_df):
+                    candidate = str(current_df.iloc[pos][mod_key]).strip()
+                    if os.path.basename(candidate) == old_base or os.path.exists(candidate):
+                        new_path = candidate
+    
+                if new_path is not None and os.path.exists(new_path):
+                    df_loaded.at[idx, mod_key] = new_path
+                    n_fixed += 1
+    
+                    if self.rank == 0 and n_fixed <= 5:
+                        print(f"[PathRemap] {mod_key}:")
+                        print(f"  old: {old_path}")
+                        print(f"  new: {new_path}")
+                else:
+                    n_missing += 1
+                    if self.rank == 0 and n_missing <= 10:
+                        print(f"[PathRemap][WARN] Cannot remap missing path:")
+                        print(f"  modality: {mod_key}")
+                        print(f"  old path: {old_path}")
+                        print(f"  basename: {old_base}")
+    
+        if self.rank == 0:
+            print(f"[PathRemap] Finished. Fixed {n_fixed} paths. Still missing {n_missing} paths.")
+    
+        return df_loaded
