@@ -2,7 +2,7 @@ root_dir: '' # if empty, use current working directory
 
 # --------- Logging Parameters ---------
 logging: False # if True, log to wandb
-output_dir: /leonardo_scratch/large/userexternal/xzhang01/Cinema_output # directory to save the model, reconstruction images, atlases, etc.
+output_dir: /lustre/fsn1/projects/rech/vnc/uil92qd/outputs/VATL_MM/Cinema_output # directory to save the model, reconstruction images, atlases, etc.
 wandb_entity: # wandb entity
 project_name: CINeMA # wandb project name
 config_data: dhcp_neo_preterm_mm # name of the dataset to use (specified in config_data.yaml)
@@ -24,8 +24,8 @@ save_imgs: # if True, save the reconstruction images for the training/validation
   test: True
 save_model: True # if True, save the model to output_dir
 load_model: 
-  path: ""  
-  epoch: 0 # which epoch to load
+  path: "/lustre/fsn1/projects/rech/vnc/uil92qd/checkpoints/VATL_MM/pretrained/"  
+  epoch: 70 # which epoch to load
 
 # --------- Data Augmentation Parameters ---------
 # not used in the publication.
