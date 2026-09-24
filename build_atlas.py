@@ -20,6 +20,8 @@ from models.inr_decoder import INR_Decoder, LatentRegressor
 from data_loading.dataset import Data
 from utils import *
 
+import torch.nn.functional as F
+from data_loading.graph_store import GraphStore
 
 class AtlasBuilder:
     """
@@ -72,60 +74,548 @@ class AtlasBuilder:
         return np.mean(loss_hist_batches)
         
     def train_batch(self, batch, epoch, split='train'):
+        """
+        Train one DataLoader batch.
+
+        V1 graph supervision:
+        - Keep the original voxel-coordinate supervision unchanged.
+        - During training only, sample positive vessel coordinates from GraphStore.
+        - Concatenate voxel coordinates and graph coordinates.
+        - Run ONE INR forward pass.
+        - Compute the original VATL loss on voxel predictions only.
+        - Compute an additional Vessel CE loss on graph-node predictions.
+
+        Total loss:
+            L_total = L_VATL + lambda_graph * L_graph
+        """
+
         loss_hist_samples = []
+
+        # Number of ordinary voxel coordinates processed per optimizer step
         n_smpls = self.args['n_samples']
-        seg_weight = self.args['optimizer']['seg_weight'] if split == 'train' else 0.0
-        coords_batch, values_batch, conditions_batch, idx_df_batch = to_device(batch)
-        sample_iterator = range(0, idx_df_batch.shape[0], n_smpls)
+
+        # As in the original code:
+        # segmentation supervision is used during training,
+        # but disabled during validation/test-time optimization.
+        seg_weight = (
+            self.args['optimizer']['seg_weight']
+            if split == 'train'
+            else 0.0
+        )
+
+        # ---------------------------------------------------------
+        # Move original DataLoader batch to GPU
+        # ---------------------------------------------------------
+        coords_batch, values_batch, conditions_batch, idx_df_batch = to_device(
+            batch,
+            self.device
+        )
+
+        sample_iterator = range(
+            0,
+            idx_df_batch.shape[0],
+            n_smpls
+        )
+
         start_time = time.time()
-        print(f"Split: {split}, Current Epoch: {epoch}, Starting Batch ...\n")
-        
+
+        print(
+            f"Split: {split}, "
+            f"Current Epoch: {epoch}, "
+            f"Starting Batch ...\n"
+        )
+
+        # =========================================================
+        # Iterate over coordinate chunks
+        # =========================================================
         for i, smpls in enumerate(sample_iterator):
+
             self.optimizers[split].zero_grad()
-            coords = coords_batch[smpls:smpls + n_smpls]
-            values = values_batch[smpls:smpls + n_smpls]
-            idx_df = idx_df_batch[smpls:smpls + n_smpls].squeeze()
-            # during validation we let the model predict the conditions
-            conditions = conditions_batch[smpls:smpls + n_smpls] if split == 'train' else self.conditions_val[idx_df]
 
-            with torch.autocast(device_type=self.device, enabled=self.args['amp']):
-                # [修改 1] 解包返回值，获取预测值 values_p 和辅助损失 aux_loss (MoE load balancing loss)
-                values_p, aux_loss = self.inr_decoder[split](coords, self.latents[split], conditions,
-                                            self.transformations[split][idx_df], idcs_df=idx_df)
-                
-                # [修改 2] 将 aux_loss 传递给损失函数
-                loss = self.loss_criterion(values_p, values, self.transformations[split][idx_df], 
-                                           moe_loss=aux_loss,
-                                           seg_weight=seg_weight)
+            # -----------------------------------------------------
+            # 1. Original voxel samples
+            # -----------------------------------------------------
+            coords = coords_batch[
+                smpls:smpls + n_smpls
+            ]
 
-            if self.args['amp']:    
-                self.grad_scalers[split].scale(loss['total']).backward()
-                
-                # [AMP 模式下的梯度裁剪] (保留原有注释逻辑)
-                #if split == 'train':
-                    #self.grad_scalers[split].unscale_(self.optimizers[split])
-                    #torch.nn.utils.clip_grad_norm_(self.inr_decoder[split].parameters(), max_norm=1.0)
-                
-                self.grad_scalers[split].step(self.optimizers[split])
-                self.grad_scalers[split].update()
+            values = values_batch[
+                smpls:smpls + n_smpls
+            ]
+
+            # Important:
+            # always keep subject indices 1-D and long
+            idx_df = idx_df_batch[
+                smpls:smpls + n_smpls
+            ].reshape(-1).long()
+
+            # During validation the condition vector itself is optimized.
+            if split == 'train':
+                conditions = conditions_batch[
+                    smpls:smpls + n_smpls
+                ]
             else:
-                loss['total'].backward()
-                
-                # [普通模式下的梯度裁剪] (保留原有注释逻辑)
-                #if split == 'train':
-                    #torch.nn.utils.clip_grad_norm_(self.inr_decoder[split].parameters(), max_norm=1.0)
-                
-                self.optimizers[split].step()
+                conditions = self.conditions_val[idx_df]
 
-            loss_hist_samples.append(loss['total'].item())
-            if i % 100 == 0 or i == (len(sample_iterator) - 1):
-                log_loss(loss, epoch, split, self.args['logging'])
-                print(f"Split: {split}, Epoch: {epoch}, "
-                      f"Elapsed Training Time Batch: {time.time() - start_time:.2f}s"
-                      f"Progress: {i/len(sample_iterator):.2f},"
-                      f"Loss: {np.mean(loss_hist_samples):.4f},")
-        return np.mean(loss_hist_samples)
-        
+            # Number of ordinary voxel samples.
+            # We need this later to split the combined INR output.
+            n_voxel = coords.shape[0]
+
+            # =====================================================
+            # 2. V1 GRAPH SAMPLING
+            # =====================================================
+
+            graph_batch_active = False
+
+            graph_coords = None
+            graph_conditions = None
+            graph_idx_df = None
+
+            graph_cfg = self.args.get(
+                'graph_supervision',
+                {}
+            )
+
+            # Graph supervision is TRAINING ONLY in V1.
+            if (
+                split == 'train'
+                and graph_cfg.get('activate', False)
+                and getattr(self, 'graph_store', None) is not None
+            ):
+
+                points_per_subject = int(
+                    graph_cfg.get(
+                        'points_per_subject',
+                        256
+                    )
+                )
+
+                graph_coords_list = []
+                graph_conditions_list = []
+                graph_idx_list = []
+
+                # -------------------------------------------------
+                # Find subjects represented in this 100k-coordinate
+                # chunk.
+                # -------------------------------------------------
+                unique_subjects = torch.unique(idx_df)
+
+                for subject_idx_tensor in unique_subjects:
+
+                    subject_idx = int(
+                        subject_idx_tensor.item()
+                    )
+
+                    # ---------------------------------------------
+                    # Sample V1 graph nodes.
+                    #
+                    # Returned coordinates are already:
+                    #   world coordinate
+                    #       -> center corrected
+                    #       -> normalized by world_bbox
+                    #
+                    # shape:
+                    #   [points_per_subject, 3]
+                    # ---------------------------------------------
+                    gcoords = self.graph_store.sample_nodes(
+                        idx_df=subject_idx,
+                        n_points=points_per_subject,
+                        device=self.device
+                    )
+
+                    n_graph_subject = gcoords.shape[0]
+
+                    # ---------------------------------------------
+                    # Find this subject's age / sex condition
+                    # from the current ordinary coordinate chunk.
+                    # ---------------------------------------------
+                    subject_mask = (
+                        idx_df == subject_idx
+                    )
+
+                    if not torch.any(subject_mask):
+                        continue
+
+                    subject_condition = conditions[
+                        subject_mask
+                    ][0]
+
+                    # Repeat the same age/sex condition for every
+                    # graph point from this subject.
+                    gconditions = (
+                        subject_condition
+                        .unsqueeze(0)
+                        .expand(
+                            n_graph_subject,
+                            -1
+                        )
+                    )
+
+                    # ---------------------------------------------
+                    # Subject ID for every graph coordinate.
+                    #
+                    # This is required because INR_Decoder uses
+                    # idx_df to retrieve:
+                    #   subject latent
+                    #   spatial latent grid
+                    # and the corresponding transformation.
+                    # ---------------------------------------------
+                    gids = torch.full(
+                        (n_graph_subject,),
+                        subject_idx,
+                        dtype=torch.long,
+                        device=self.device
+                    )
+
+                    graph_coords_list.append(
+                        gcoords
+                    )
+
+                    graph_conditions_list.append(
+                        gconditions
+                    )
+
+                    graph_idx_list.append(
+                        gids
+                    )
+
+                # ---------------------------------------------
+                # Merge graph samples from all subjects in the
+                # current coordinate chunk
+                # ---------------------------------------------
+                if len(graph_coords_list) > 0:
+
+                    graph_coords = torch.cat(
+                        graph_coords_list,
+                        dim=0
+                    )
+
+                    graph_conditions = torch.cat(
+                        graph_conditions_list,
+                        dim=0
+                    )
+
+                    graph_idx_df = torch.cat(
+                        graph_idx_list,
+                        dim=0
+                    )
+
+                    graph_batch_active = True
+
+            # =====================================================
+            # 3. CONCATENATE VOXEL + GRAPH COORDINATES
+            # =====================================================
+
+            if graph_batch_active:
+
+                coords_forward = torch.cat(
+                    [
+                        coords,
+                        graph_coords
+                    ],
+                    dim=0
+                )
+
+                conditions_forward = torch.cat(
+                    [
+                        conditions,
+                        graph_conditions
+                    ],
+                    dim=0
+                )
+
+                idx_forward = torch.cat(
+                    [
+                        idx_df,
+                        graph_idx_df
+                    ],
+                    dim=0
+                )
+
+            else:
+
+                coords_forward = coords
+
+                conditions_forward = conditions
+
+                idx_forward = idx_df
+
+            # =====================================================
+            # 4. ONE INR FORWARD
+            # =====================================================
+
+            device_type = (
+                self.device.type
+                if isinstance(
+                    self.device,
+                    torch.device
+                )
+                else str(
+                    self.device
+                ).split(':')[0]
+            )
+
+            with torch.autocast(
+                device_type=device_type,
+                enabled=self.args['amp']
+            ):
+
+                output_forward, aux_loss = (
+                    self.inr_decoder[split](
+                        coords_forward,
+                        self.latents[split],
+                        conditions_forward,
+                        self.transformations[
+                            split
+                        ][idx_forward],
+                        idcs_df=idx_forward
+                    )
+                )
+
+                # =============================================
+                # 5. ORIGINAL VATL OUTPUT
+                # =============================================
+
+                # First n_voxel predictions correspond to the
+                # original sampled image coordinates.
+                values_p = output_forward[
+                    :n_voxel
+                ]
+
+                # Original VATL loss remains unchanged.
+                loss = self.loss_criterion(
+                    values_p,
+                    values,
+                    self.transformations[
+                        split
+                    ][idx_df],
+                    moe_loss=aux_loss,
+                    seg_weight=seg_weight
+                )
+
+                # =============================================
+                # 6. GRAPH V1 POSITIVE-VESSEL LOSS
+                # =============================================
+
+                if graph_batch_active:
+
+                    # Remaining predictions correspond to graph
+                    # coordinates.
+                    graph_output = output_forward[
+                        n_voxel:
+                    ]
+
+                    # Example:
+                    #
+                    # out_dim = [2, 11]
+                    #
+                    # channels:
+                    #   0     MRA
+                    #   1     T1
+                    #   2:    segmentation logits
+                    #
+                    sr_dims = sum(
+                        self.args[
+                            'inr_decoder'
+                        ]['out_dim'][:-1]
+                    )
+
+                    graph_seg_logits = (
+                        graph_output[
+                            ...,
+                            sr_dims:
+                        ]
+                    )
+
+                    # -----------------------------------------
+                    # Find Vessel class index automatically
+                    # -----------------------------------------
+                    vessel_label = graph_cfg.get(
+                        'vessel_label',
+                        'Vessel'
+                    )
+
+                    if (
+                        vessel_label
+                        not in
+                        self.args[
+                            'dataset'
+                        ]['label_names']
+                    ):
+                        raise ValueError(
+                            f"Graph supervision vessel label "
+                            f"'{vessel_label}' was not found in "
+                            f"dataset.label_names: "
+                            f"{self.args['dataset']['label_names']}"
+                        )
+
+                    vessel_idx = (
+                        self.args[
+                            'dataset'
+                        ]['label_names']
+                        .index(
+                            vessel_label
+                        )
+                    )
+
+                    # Every graph node is a positive vessel
+                    # centerline coordinate.
+                    graph_target = torch.full(
+                        (
+                            graph_seg_logits.shape[
+                                0
+                            ],
+                        ),
+                        vessel_idx,
+                        dtype=torch.long,
+                        device=self.device
+                    )
+
+                    # -----------------------------------------
+                    # Raw graph CE
+                    # -----------------------------------------
+                    graph_loss_raw = (
+                        F.cross_entropy(
+                            graph_seg_logits,
+                            graph_target
+                        )
+                    )
+
+                    # -----------------------------------------
+                    # Weight graph supervision
+                    # -----------------------------------------
+                    graph_weight = float(
+                        graph_cfg.get(
+                            'weight',
+                            0.1
+                        )
+                    )
+
+                    loss['graph'] = (
+                        graph_weight
+                        * graph_loss_raw
+                    )
+
+                    # Optional:
+                    # useful for debugging / logging because
+                    # weighted graph loss alone depends on lambda.
+                    loss['graph_raw'] = (
+                        graph_loss_raw
+                    )
+
+                    # -----------------------------------------
+                    # FINAL LOSS
+                    # -----------------------------------------
+                    loss['total'] = (
+                        loss['total']
+                        + loss['graph']
+                    )
+
+                else:
+
+                    # Keep dictionary structure consistent during
+                    # validation or when graph supervision is off.
+                    loss['graph'] = torch.zeros(
+                        (),
+                        device=self.device
+                    )
+
+                    loss['graph_raw'] = torch.zeros(
+                        (),
+                        device=self.device
+                    )
+
+            # =====================================================
+            # 7. BACKPROPAGATION
+            # =====================================================
+
+            if self.args['amp']:
+
+                self.grad_scalers[
+                    split
+                ].scale(
+                    loss['total']
+                ).backward()
+
+                self.grad_scalers[
+                    split
+                ].step(
+                    self.optimizers[
+                        split
+                    ]
+                )
+
+                self.grad_scalers[
+                    split
+                ].update()
+
+            else:
+
+                loss['total'].backward()
+
+                self.optimizers[
+                    split
+                ].step()
+
+            # =====================================================
+            # 8. LOGGING
+            # =====================================================
+
+            loss_hist_samples.append(
+                loss['total'].item()
+            )
+
+            if (
+                i % 100 == 0
+                or
+                i == (
+                    len(sample_iterator) - 1
+                )
+            ):
+
+                log_loss(
+                    loss,
+                    epoch,
+                    split,
+                    self.args['logging']
+                )
+
+                if graph_batch_active:
+
+                    print(
+                        f"Split: {split}, "
+                        f"Epoch: {epoch}, "
+                        f"Progress: "
+                        f"{i / len(sample_iterator):.2f}, "
+                        f"Loss: "
+                        f"{np.mean(loss_hist_samples):.4f}, "
+                        f"Graph Raw: "
+                        f"{loss['graph_raw'].item():.4f}, "
+                        f"Graph Weighted: "
+                        f"{loss['graph'].item():.4f}, "
+                        f"Graph Points: "
+                        f"{graph_coords.shape[0]}, "
+                        f"Elapsed: "
+                        f"{time.time() - start_time:.2f}s"
+                    )
+
+                else:
+
+                    print(
+                        f"Split: {split}, "
+                        f"Epoch: {epoch}, "
+                        f"Progress: "
+                        f"{i / len(sample_iterator):.2f}, "
+                        f"Loss: "
+                        f"{np.mean(loss_hist_samples):.4f}, "
+                        f"Elapsed: "
+                        f"{time.time() - start_time:.2f}s"
+                    )
+
+        return np.mean(
+            loss_hist_samples
+        )
+
     def validate(self, epoch_train):
         """
         Validate the model on the validation set.
@@ -518,6 +1008,27 @@ class AtlasBuilder:
             self._init_latents(split='train')
         self._init_optimizer(split='train') # optimizer is not loaded from checkpoint
         self._init_dataloading(split='val')
+        # ==============================
+        # Graph supervision V1
+        # ==============================
+        self.graph_store = None
+
+        graph_cfg = self.args.get('graph_supervision', {})
+
+        if graph_cfg.get('activate', False):
+            self.graph_store = GraphStore(
+                self.args,
+                self.datasets['train'].df
+            )
+
+            print(
+                f"Initialized GraphStore for "
+                f"{len(self.datasets['train'])} training subjects."
+            )
+
+            # V1启动前先检查前几个subject
+            for idx in range(min(3, len(self.datasets['train']))):
+                print("[Graph QC]", self.graph_store.summary(idx))
 
     def _init_validation(self):
         self._seed()
@@ -601,3 +1112,100 @@ class AtlasBuilder:
         torch.cuda.manual_seed(self.args['seed'])
         np.random.seed(self.args['seed'])
     
+    def _sample_graph_batch(self, idx_df, conditions, split='train'):
+        """
+        V1:
+        For every subject appearing in the current coordinate chunk,
+        uniformly sample graph nodes.
+
+        Returns
+        -------
+        graph_coords:
+            [N_graph, 3]
+
+        graph_conditions:
+            [N_graph, cond_dim]
+
+        graph_idx_df:
+            [N_graph]
+        """
+
+        if (
+            split != 'train'
+            or self.graph_store is None
+            or not self.args['graph_supervision']['activate']
+        ):
+            return None
+
+        graph_cfg = self.args['graph_supervision']
+        n_points = graph_cfg['points_per_subject']
+
+        graph_coords_list = []
+        graph_conditions_list = []
+        graph_idx_list = []
+
+        idx_df_long = idx_df.long()
+
+        # Subjects actually present in this 100k coordinate chunk
+        unique_subjects = torch.unique(idx_df_long)
+
+        for subject_idx_tensor in unique_subjects:
+
+            subject_idx = int(subject_idx_tensor.item())
+
+            # ------------------------------
+            # sample graph nodes
+            # ------------------------------
+            gcoords = self.graph_store.sample_nodes(
+                idx_df=subject_idx,
+                n_points=n_points,
+                device=self.device
+            )
+
+            n_graph = gcoords.shape[0]
+
+            # ------------------------------
+            # condition of this subject
+            # age / sex etc.
+            # ------------------------------
+            subject_mask = (idx_df_long == subject_idx)
+
+            subject_condition = conditions[subject_mask][0]
+
+            gconditions = subject_condition.unsqueeze(0).expand(
+                n_graph,
+                -1
+            )
+
+            # ------------------------------
+            # graph point -> subject id
+            # ------------------------------
+            gids = torch.full(
+                (n_graph,),
+                subject_idx,
+                dtype=torch.long,
+                device=self.device
+            )
+
+            graph_coords_list.append(gcoords)
+            graph_conditions_list.append(gconditions)
+            graph_idx_list.append(gids)
+
+        if len(graph_coords_list) == 0:
+            return None
+
+        graph_coords = torch.cat(graph_coords_list, dim=0)
+        graph_conditions = torch.cat(
+            graph_conditions_list,
+            dim=0
+        )
+        graph_idx_df = torch.cat(
+            graph_idx_list,
+            dim=0
+        )
+
+        return (
+            graph_coords,
+            graph_conditions,
+            graph_idx_df
+        )

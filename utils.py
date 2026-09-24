@@ -621,16 +621,33 @@ def log_metrics(args, metrics, epoch, df=None, split='train'):
 
 
 def log_loss(loss, epoch, split, log=True):
-    if log: 
-        wd.log({f"{split}/loss": loss['total'].item()})
-        wd.log({f"{split}/loss_sr": loss['sr'].item()})
-        wd.log({f"{split}/loss_seg": loss['seg'].item()})
-        wd.log({f"{split}/loss_moe": loss['moe'].item()})
-        wd.log({f"{split}/loss_tf_rot": loss['tf_rot'].item()})
-        wd.log({f"{split}/loss_tf_trans": loss['tf_trans'].item()})
-        wd.log({f"{split}/loss_tf_scale": loss['tf_scale'].item()})
-        wd.log({f"{split}/loss_tf": loss['tf'].item()})
-        wd.log({f"{split}/epoch": epoch})
+    if log:
+        wd.log({
+            f"{split}/loss":
+            loss['total'].item()
+        })
+
+        wd.log({
+            f"{split}/loss_sr":
+            loss['sr'].item()
+        })
+
+        wd.log({
+            f"{split}/loss_seg":
+            loss['seg'].item()
+        })
+
+        if 'graph' in loss:
+            wd.log({
+                f"{split}/loss_graph":
+                loss['graph'].item()
+            })
+
+        wd.log({
+            f"{split}/loss_moe":
+            loss['moe'].item()
+        })
+
 
 
 def normalize_intensities(values, norm_type):

@@ -127,3 +127,10 @@ save_every: 10
 batch_size: 20 # batch size for training/validation (number of subjects per batch)
 n_samples: 100000 # number of coordinates in each "inner_batch" sampled across the subejct batch
 num_workers: 8 # number of workers for dataloader
+
+graph_supervision:
+  activate: True
+  graph_key: "Graph"       
+  points_per_subject: 256
+  weight: 0.1
+  vessel_label: "Vessel"
