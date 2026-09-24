@@ -21,6 +21,56 @@ class Logger(object):
         self.terminal.flush()
         self.log.flush()
 
+def sync_out_dim_with_dataset(args, rank=None):
+    """
+    Complete inr_decoder.out_dim using dataset.class_weights.
+
+    Example:
+        config_atlas.yaml: out_dim: [1]
+        config_data.yaml: class_weights length = 11
+
+    Then:
+        args["inr_decoder"]["out_dim"] becomes [1, 11]
+    """
+    dataset = args["dataset"]
+    inr_decoder = args["inr_decoder"]
+
+    class_weights = dataset.get("class_weights", None)
+    label_names = dataset.get("label_names", None)
+
+    if class_weights is None:
+        raise ValueError(
+            "dataset.class_weights is required to infer inr_decoder.out_dim[-1]."
+        )
+
+    n_seg_channels = len(class_weights)
+
+    should_print = rank is None or rank == 0
+
+    if label_names is not None and len(label_names) != n_seg_channels:
+        if should_print:
+            print(
+                f"WARNING: dataset.label_names has {len(label_names)} entries, "
+                f"but dataset.class_weights has {n_seg_channels} entries."
+            )
+
+    out_dim = list(inr_decoder.get("out_dim", []))
+
+    if len(out_dim) == 0:
+        out_dim = [len(dataset["modalities"]) - 1, n_seg_channels]
+    elif len(out_dim) == 1:
+        out_dim = [out_dim[0], n_seg_channels]
+    else:
+        if out_dim[-1] != n_seg_channels and should_print:
+            print(
+                f"INFO: overriding inr_decoder.out_dim[-1] from {out_dim[-1]} "
+                f"to {n_seg_channels} based on dataset.class_weights."
+            )
+        out_dim[-1] = n_seg_channels
+
+    inr_decoder["out_dim"] = out_dim
+    return args
+
 def initial_setup(cmd_args=None):
     with open('./configs/config_atlas.yaml', 'r') as stream:
         args_atlas = yaml.safe_load(stream)
@@ -33,6 +83,7 @@ def initial_setup(cmd_args=None):
     if cmd_args is not None:
         args = override_args(args, cmd_args)
 
+    args = sync_out_dim_with_dataset(args)
     job_id = os.getenv("SLURM_JOB_ID", "loc")[-3:]
     time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dsetup = args['config_data']
