@@ -79,7 +79,7 @@ class Criterion(nn.Module):
                 'total': 0.0}
 
         if seg_weight > 0:
-            loss['seg'] = seg_weight * self.criterion_seg(output[..., self.sr_dims:], target[..., -1].to(torch.int64))
+            loss['seg'] = self.criterion_seg(output[..., self.sr_dims:], target[..., -1].to(torch.int64))
             
         if tfs is not None:
             loss['tf_rot'] = torch.mean(tfs[..., :3] ** 2)

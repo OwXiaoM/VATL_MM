@@ -96,25 +96,141 @@ class AtlasBuilderDDP:
         loss_hist_samples = []
         n_smpls = self.args['n_samples']
         seg_weight = self.args['optimizer']['seg_weight'] if split == 'train' else 0.0
+
+        # Move batch to current GPU
         coords_batch, values_batch, conditions_batch, idx_df_batch = to_device(batch, self.device)
         sample_iterator = range(0, idx_df_batch.shape[0], n_smpls)
-        
+
+        # Inner coordinate batches
         for i, smpls in enumerate(sample_iterator):
             self.optimizers[split].zero_grad()
+
+            # Original voxel coordinates
             coords = coords_batch[smpls:smpls + n_smpls]
             values = values_batch[smpls:smpls + n_smpls]
-            idx_df = idx_df_batch[smpls:smpls + n_smpls].squeeze()
-            conditions = conditions_batch[smpls:smpls + n_smpls] if split == 'train' else self.conditions_val[idx_df]
 
-            with torch.autocast(device_type='cuda', enabled=self.args['amp']):
-                # idcs_df 传入，确保拿到正确的 transformation/latent
-                values_p, aux_loss = self.inr_decoder[split](coords, self.latents[split], conditions,
-                                            self.transformations[split][idx_df], idcs_df=idx_df)
+            # Important: do NOT use squeeze(), because a chunk containing only one point would become scalar.
+            idx_df = idx_df_batch[smpls:smpls + n_smpls].reshape(-1).long()
+
+            if split == 'train':
+                conditions = conditions_batch[smpls:smpls + n_smpls]
+            else:
+                conditions = self.conditions_val[idx_df]
+
+            n_voxel = coords.shape[0]
+
+            # Graph supervision V1
+            graph_batch_active = False
+            graph_coords = None
+            graph_conditions = None
+            graph_idx_df = None
+            graph_cfg = self.args.get('graph_supervision', {})
+
+            if (split == 'train' and graph_cfg.get('activate', False) and 
+                getattr(self, 'graph_store', None) is not None):
                 
-                loss = self.loss_criterion(values_p, values, self.transformations[split][idx_df], 
-                                           moe_loss=aux_loss, seg_weight=seg_weight)
+                points_per_subject = int(graph_cfg.get('points_per_subject', 256))
+                graph_coords_list = []
+                graph_conditions_list = []
+                graph_idx_list = []
 
-            if self.args['amp']:    
+                # Only subjects actually appearing in this chunk
+                unique_subjects = torch.unique(idx_df)
+
+                for subject_idx_tensor in unique_subjects:
+                    subject_idx = int(subject_idx_tensor.item())
+
+                    # Sample graph nodes for this subject
+                    gcoords = self.graph_store.sample_nodes(
+                        idx_df=subject_idx, n_points=points_per_subject, device=self.device
+                    )
+                    n_graph_subject = gcoords.shape[0]
+
+                    # Get condition vector of this subject directly from current voxel chunk
+                    subject_mask = (idx_df == subject_idx)
+                    if not torch.any(subject_mask):
+                        continue
+
+                    subject_condition = conditions[subject_mask][0]
+                    gconditions = subject_condition.unsqueeze(0).expand(n_graph_subject, -1)
+
+                    # Associate graph points with subject id
+                    gids = torch.full(
+                        (n_graph_subject,), subject_idx, dtype=torch.long, device=self.device
+                    )
+
+                    graph_coords_list.append(gcoords)
+                    graph_conditions_list.append(gconditions)
+                    graph_idx_list.append(gids)
+
+                # Merge graph samples from all subjects
+                if len(graph_coords_list) > 0:
+                    graph_coords = torch.cat(graph_coords_list, dim=0)
+                    graph_conditions = torch.cat(graph_conditions_list, dim=0)
+                    graph_idx_df = torch.cat(graph_idx_list, dim=0)
+                    graph_batch_active = True
+
+            # Merge voxel + graph coordinates
+            if graph_batch_active:
+                coords_forward = torch.cat([coords, graph_coords], dim=0)
+                conditions_forward = torch.cat([conditions, graph_conditions], dim=0)
+                idx_forward = torch.cat([idx_df, graph_idx_df], dim=0)
+            else:
+                coords_forward = coords
+                conditions_forward = conditions
+                idx_forward = idx_df
+
+            # ONE DDP forward pass
+            with torch.autocast(device_type='cuda', enabled=self.args['amp']):
+                output_forward, aux_loss = self.inr_decoder[split](
+                    coords_forward,
+                    self.latents[split],
+                    conditions_forward,
+                    self.transformations[split][idx_forward],
+                    idcs_df=idx_forward
+                )
+
+                # Original VATL predictions
+                values_p = output_forward[:n_voxel]
+
+                loss = self.loss_criterion(
+                    values_p,
+                    values,
+                    self.transformations[split][idx_df],
+                    moe_loss=aux_loss,
+                    seg_weight=seg_weight
+                )
+
+                # Graph V1 loss
+                if graph_batch_active:
+                    graph_output = output_forward[n_voxel:]
+
+                    # Number of image channels: MRA + T1 = 2 in your current model
+                    sr_dims = sum(self.args['inr_decoder']['out_dim'][:-1])
+                    graph_seg_logits = graph_output[..., sr_dims:]
+                    vessel_label = graph_cfg.get('vessel_label', 'Vessel')
+
+                    if vessel_label not in self.args['dataset']['label_names']:
+                        raise ValueError(f"Graph vessel label '{vessel_label}' not found in {self.args['dataset']['label_names']}")
+
+                    vessel_idx = self.args['dataset']['label_names'].index(vessel_label)
+
+                    # Every graph node is a positive vessel point
+                    graph_target = torch.full(
+                        (graph_seg_logits.shape[0],), vessel_idx, dtype=torch.long, device=self.device
+                    )
+                    graph_loss_raw = F.cross_entropy(graph_seg_logits, graph_target)
+                    graph_weight = float(graph_cfg.get('weight', 0.1))
+
+                    loss['graph_raw'] = graph_loss_raw
+                    loss['graph'] = graph_weight * graph_loss_raw
+                    loss['total'] = loss['total'] + loss['graph']
+                else:
+                    loss['graph_raw'] = torch.zeros((), device=self.device)
+                    loss['graph'] = torch.zeros((), device=self.device)
+
+            # Backprop
+            if self.args['amp']:
                 self.grad_scalers[split].scale(loss['total']).backward()
                 self.grad_scalers[split].step(self.optimizers[split])
                 self.grad_scalers[split].update()
@@ -123,9 +239,17 @@ class AtlasBuilderDDP:
                 self.optimizers[split].step()
 
             loss_hist_samples.append(loss['total'].item())
-            
+
+            # Rank 0 logging only
             if (i % 100 == 0 or i == (len(sample_iterator) - 1)) and self.rank == 0:
                 log_loss(loss, epoch, split, self.args['logging'])
+
+                if graph_batch_active:
+                    print(
+                        f"[DDP Graph V1] Epoch {epoch}, Step {i}/{len(sample_iterator)}, "
+                        f"Total={loss['total'].item():.4f}, GraphRaw={loss['graph_raw'].item():.4f}, "
+                        f"GraphWeighted={loss['graph'].item():.4f}, GraphPoints={graph_coords.shape[0]}"
+                    )
 
         return np.mean(loss_hist_samples)
 
@@ -504,21 +628,32 @@ class AtlasBuilderDDP:
         self.inr_decoder, self.latents, self.transformations = {}, {}, {}
         self.optimizers, self.grad_scalers = {}, {}
         self.schedulers = {}
+
         chkp_path = self.args['load_model']['path']
+
         if len(chkp_path) > 0:
-            self.load_checkpoint(chkp_path, self.args['load_model']['epoch'])
+            self.load_checkpoint(
+                chkp_path,
+                self.args['load_model']['epoch']
+            )
         else:
             self._init_dataloading(split='train')
             self._init_inr(split='train')
             self._init_transformations(split='train')
             self._init_latents(split='train')
-        self._init_optimizer(split='train') 
+
+        self._init_optimizer(split='train')
         self._init_dataloading(split='val')
+
+        # =========================================================
+        # Graph supervision V1
+        # =========================================================
         self.graph_store = None
 
         graph_cfg = self.args.get('graph_supervision', {})
 
         if graph_cfg.get('activate', False):
+
             self.graph_store = GraphStore(
                 self.args,
                 self.datasets['train'].df
@@ -530,7 +665,12 @@ class AtlasBuilderDDP:
                     f"{len(self.datasets['train'])} training subjects."
                 )
 
-                for idx in range(min(3, len(self.datasets['train']))):
+                for idx in range(
+                    min(
+                        3,
+                        len(self.datasets['train'])
+                    )
+                ):
                     print(
                         "[Graph QC]",
                         self.graph_store.summary(idx)
