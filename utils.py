@@ -643,6 +643,12 @@ def log_loss(loss, epoch, split, log=True):
                 loss['graph'].item()
             })
 
+        if 'graph_raw' in loss:
+            wd.log({
+                f"{split}/loss_graph_raw":
+                loss['graph_raw'].item()
+            })
+
         wd.log({
             f"{split}/loss_moe":
             loss['moe'].item()

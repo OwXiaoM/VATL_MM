@@ -14,11 +14,12 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-# 引用原有的模型和数据定义
 from models.inr_decoder import INR_Decoder, LatentRegressor
 from data_loading.dataset import Data
 from utils import *
-
+#Graph component
+import torch.nn.functional as F
+from data_loading.graph_store import GraphStore
 class AtlasBuilderDDP:
     def __init__(self, args):
         self.args = args
@@ -513,6 +514,27 @@ class AtlasBuilderDDP:
             self._init_latents(split='train')
         self._init_optimizer(split='train') 
         self._init_dataloading(split='val')
+        self.graph_store = None
+
+        graph_cfg = self.args.get('graph_supervision', {})
+
+        if graph_cfg.get('activate', False):
+            self.graph_store = GraphStore(
+                self.args,
+                self.datasets['train'].df
+            )
+
+            if self.rank == 0:
+                print(
+                    f"Initialized GraphStore for "
+                    f"{len(self.datasets['train'])} training subjects."
+                )
+
+                for idx in range(min(3, len(self.datasets['train']))):
+                    print(
+                        "[Graph QC]",
+                        self.graph_store.summary(idx)
+                    )
 
     def _init_validation(self):
         self._seed()
