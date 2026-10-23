@@ -209,3 +209,72 @@ mra_atlas_synthseg_label_t1_fast: # dhcp neonates multimodal dataset config
   class_weights: [0.1, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   world_bbox: [240, 240, 120] # size of the (roughly) smallest COMMON bounding box for all subjects in mm
   normalize_values: 'minmax' # 'minmax' or 'zscore'
+
+mra_atlas_synthseg_label_t1_fast_graph:
+  dataset_name: mra_atlas_synthseg_label_t1_fast
+
+  subject_ids: /leonardo/home/userexternal/xzhang01/data/v1/subject_ids_label_t1_fast.yaml
+  tsv_file: /leonardo/home/userexternal/xzhang01/data/v1/ixi_metadata_label_t1_fast_graph.tsv
+  modalities: ['MRA', 'T1', 'Seg']
+
+  conditions:
+    scan_age: true
+    sex: true
+    birth_age: false
+
+  constraints:
+    scan_age:
+      type: numeric
+      min: 19
+      max: 87
+      distribution:
+        type: 'uniform_fillup'
+        priority: 10
+    sex:
+      type: categoric
+      values: ['M', 'F']
+
+  label_names: ['Background', 'Vessel','CSF', 'cGM', 'WM', 'BG', 'Ventricles', 'Cerebellum', 'Deep_GM', 'Brainstem', 'HippocampiAmygdala']
+  class_weights: [0.1, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  world_bbox: [240, 240, 120]
+
+  normalize_values: 'minmax'
+
+mra_atlas_synthseg_label_t1_fast_sdf:
+  dataset_name: mra_atlas_synthseg_label_t1_fast
+
+  subject_ids: /leonardo/home/userexternal/xzhang01/data/v1/subject_ids_label_t1_fast.yaml
+  tsv_file: /leonardo/home/userexternal/xzhang01/data/v1/ixi_metadata_label_t1_fast_sdf.tsv
+  modalities: ['MRA', 'T1', 'Seg']
+  sdf_key: SDF # separate float target in physical mm; negative inside vessels
+  sdf_sampling: # training only; validation/test retain the original sampling
+    num_points: 500000 # fixed per subject for DDP
+    surface_band_mm: 2.0 # abs(SDF) <= band; overlaps the interior pool
+    fractions:
+      interior: 0.25 # SDF < 0
+      surface: 0.35
+      tissue: 0.25 # SDF > band and Seg > 0
+      background: 0.15 # SDF > band and Seg == 0
+
+  conditions:
+    scan_age: true
+    sex: true
+    birth_age: false
+
+  constraints:
+    scan_age:
+      type: numeric
+      min: 19
+      max: 87
+      distribution:
+        type: 'uniform_fillup'
+        priority: 10
+    sex:
+      type: categoric
+      values: ['M', 'F']
+
+  label_names: ['Background', 'Vessel','CSF', 'cGM', 'WM', 'BG', 'Ventricles', 'Cerebellum', 'Deep_GM', 'Brainstem', 'HippocampiAmygdala']
+  class_weights: [0.1, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  world_bbox: [240, 240, 120]
+
+  normalize_values: 'minmax'

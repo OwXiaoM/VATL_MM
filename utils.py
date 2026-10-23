@@ -15,6 +15,7 @@ from skimage.metrics import structural_similarity as ssim_metric
 import scipy.ndimage as ndi
 import torchio as tio
 
+
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.ndarray):
@@ -23,7 +24,7 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 def dict_to_simplenamespace(d):
-    """ Recursively converts dictionary to SimpleNamespace. """
+    """Recursively convert dictionaries to SimpleNamespace objects."""
     if isinstance(d, dict):
         for key, value in d.items():
             d[key] = dict_to_simplenamespace(value)
@@ -33,10 +34,8 @@ def dict_to_simplenamespace(d):
 
 
 class MaskSubjectTransform(tio.Transform):
-    """
-    A custom TorchIO transform that uses a segmentation image 
-    to mask the intensity images in a subject.
-    """
+    """Mask selected intensity images using the subject segmentation."""
+
     def __init__(self, segmentation_key, intensity_keys=None, **kwargs):
         super().__init__(**kwargs)
         self.segmentation_key = segmentation_key
@@ -44,17 +43,19 @@ class MaskSubjectTransform(tio.Transform):
 
     def apply_transform(self, subject):
         seg_image = subject[self.segmentation_key]
-        seg_data = seg_image.data  # shape: (1, X, Y, Z)
-        
+        seg_data = seg_image.data
+
         if self.intensity_keys is None:
-            keys_to_mask = [k for k in subject.get_images_names() if k != self.segmentation_key]
+            keys_to_mask = [
+                k for k in subject.get_images_names() if k != self.segmentation_key
+            ]
         else:
             keys_to_mask = self.intensity_keys
 
         for key in keys_to_mask:
             image = subject[key]
             image.data = image.data * (seg_data > 0)
-        
+
         return subject
 
 
@@ -62,45 +63,237 @@ class Criterion(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.tf_weight = args['optimizer']['tf_weight']
-        self.moe_weight = args['optimizer'].get('moe_weight', 0.1) 
-        
-        self.n_classes = args['inr_decoder']['out_dim'][-1]-1
-        self.sr_dims = sum(args['inr_decoder']['out_dim'][:-1])
-        self.criterion_sr = nn.MSELoss() if args['optimizer']['loss_metric'] == 'mse' else nn.L1Loss()
-        self.ce_weights = torch.tensor(args['dataset']['class_weights'], dtype=torch.float32, device=args['device']) if args['dataset']['class_weights'] is not None else None
+        self.tf_weight = args["optimizer"]["tf_weight"]
+        self.moe_weight = args["optimizer"].get("moe_weight", 0.1)
+
+        self.n_classes = args["inr_decoder"]["out_dim"][-1] - 1
+        self.sr_dims = sum(args["inr_decoder"]["out_dim"][:-1])
+        self.seg_end = self.sr_dims + args["inr_decoder"]["out_dim"][-1]
+        self.sdf_enabled = bool(args["dataset"].get("sdf_key"))
+        self.sdf_weight = (
+            float(args["optimizer"].get("sdf_weight", 1.0)) if self.sdf_enabled else 0.0
+        )
+        self.sdf_trunc_mm = float(args["optimizer"].get("sdf_trunc_mm", 5.0))
+        if not math.isfinite(self.sdf_weight) or self.sdf_weight < 0:
+            raise ValueError("optimizer.sdf_weight must be finite and nonnegative")
+        if not math.isfinite(self.sdf_trunc_mm) or self.sdf_trunc_mm <= 0:
+            raise ValueError("optimizer.sdf_trunc_mm must be finite and positive")
+        if self.sdf_enabled and args["inr_decoder"].get("sdf_dim", 0) != 1:
+            raise ValueError("SDF supervision requires inr_decoder.sdf_dim: 1")
+        self.criterion_sr = (
+            nn.MSELoss() if args["optimizer"]["loss_metric"] == "mse" else nn.L1Loss()
+        )
+        self.ce_weights = (
+            torch.tensor(
+                args["dataset"]["class_weights"],
+                dtype=torch.float32,
+                device=args["device"],
+            )
+            if args["dataset"]["class_weights"] is not None
+            else None
+        )
         self.criterion_seg = nn.CrossEntropyLoss(weight=self.ce_weights)
 
-    def forward(self, output, target, tfs, moe_loss=None, sr_weight=1.0, seg_weight=1.0):
-        loss = {'seg': torch.tensor(0.0), 
-                'sr': sr_weight * self.criterion_sr(output[..., :self.sr_dims], target[..., :self.sr_dims]),
-                'trafo': torch.tensor(0.0), 
-                'moe': torch.tensor(0.0),
-                'total': 0.0}
+    def forward(
+        self,
+        output,
+        target,
+        tfs,
+        moe_loss=None,
+        sr_weight=1.0,
+        seg_weight=1.0,
+        sdf_weight=None,
+    ):
+        # Targets contain image intensities, one tissue label, then optional SDF in mm.
+        expected_targets = self.sr_dims + 1 + int(self.sdf_enabled)
+        if target.shape[-1] != expected_targets:
+            raise ValueError(
+                f"Expected {expected_targets} target channels, got {target.shape[-1]}"
+            )
+        if output.shape[-1] < self.seg_end + int(self.sdf_enabled):
+            raise ValueError("Decoder output is missing required tissue/SDF channels")
+        zero = output.new_zeros(())
+        loss = {
+            "seg": zero,
+            "sdf": zero,
+            "sdf_raw": zero,
+            "tf": zero,
+            "sr": sr_weight
+            * self.criterion_sr(
+                output[..., : self.sr_dims], target[..., : self.sr_dims]
+            ),
+            "trafo": zero,
+            "moe": zero,
+            "total": 0.0,
+        }
 
         if seg_weight > 0:
-            loss['seg'] = self.criterion_seg(output[..., self.sr_dims:], target[..., -1].to(torch.int64))
-            
-        if tfs is not None:
-            loss['tf_rot'] = torch.mean(tfs[..., :3] ** 2)
-            loss['tf_trans'] = torch.mean(tfs[..., 3:6] ** 2)
-            loss['tf_scale'] = torch.mean(tfs[..., 6:9] ** 2) if tfs.shape[-1] == 9 else torch.tensor(0.0)
-            loss['tf'] = loss['tf_rot'] + loss['tf_trans'] + loss['tf_scale']
-        
-        if moe_loss is not None and self.moe_weight > 0:
-            loss['moe'] = self.moe_weight * moe_loss
+            loss["seg"] = self.criterion_seg(
+                output[..., self.sr_dims : self.seg_end],
+                target[..., self.sr_dims].to(torch.int64),
+            )
 
-        loss['total'] = loss['sr'] + seg_weight * loss['seg'] + self.tf_weight * loss['tf'] + loss['moe']
+        sdf_weight = self.sdf_weight if sdf_weight is None else sdf_weight
+        if self.sdf_enabled and sdf_weight > 0:
+            sdf_mm = target[..., self.sr_dims + 1]
+            if not torch.isfinite(sdf_mm).all():
+                raise ValueError("SDF targets contain non-finite distances")
+            sdf_target = (
+                sdf_mm.clamp(-self.sdf_trunc_mm, self.sdf_trunc_mm) / self.sdf_trunc_mm
+            )
+            loss["sdf_raw"] = F.l1_loss(output[..., self.seg_end], sdf_target)
+            loss["sdf"] = sdf_weight * loss["sdf_raw"]
+
+        if tfs is not None:
+            loss["tf_rot"] = torch.mean(tfs[..., :3] ** 2)
+            loss["tf_trans"] = torch.mean(tfs[..., 3:6] ** 2)
+            loss["tf_scale"] = (
+                torch.mean(tfs[..., 6:9] ** 2) if tfs.shape[-1] == 9 else zero
+            )
+            loss["tf"] = loss["tf_rot"] + loss["tf_trans"] + loss["tf_scale"]
+
+        if moe_loss is not None and self.moe_weight > 0:
+            loss["moe"] = self.moe_weight * moe_loss
+
+        loss["total"] = (
+            loss["sr"]
+            + seg_weight * loss["seg"]
+            + loss["sdf"]
+            + self.tf_weight * loss["tf"]
+            + loss["moe"]
+        )
         return loss
+
+
+def graph_radius_enabled(args):
+    return bool(
+        args.get("graph_supervision", {}).get("radius", {}).get("activate", False)
+    )
+
+
+def graph_supervision_mode(args):
+    mode = args.get("graph_supervision", {}).get("mode", "ce")
+    if mode not in ("ce", "sdf", "both"):
+        raise ValueError("graph_supervision.mode must be ce, sdf, or both")
+    if (mode in ("sdf", "both") or graph_radius_enabled(args)) and (
+        not args["dataset"].get("sdf_key") or args["inr_decoder"].get("sdf_dim", 0) != 1
+    ):
+        raise ValueError(
+            "Graph SDF supervision requires dataset.sdf_key and inr_decoder.sdf_dim: 1"
+        )
+    return mode
+
+
+def graph_supervision_loss(args, output, sdf_target_mm=None, radius_target_mm=None):
+    """Graph CE/SDF losses plus an optional consistency-gated radius prior."""
+    mode = graph_supervision_mode(args)
+    config = args.get("graph_supervision", {})
+    sr_dims = sum(args["inr_decoder"]["out_dim"][:-1])
+    seg_end = sr_dims + args["inr_decoder"]["out_dim"][-1]
+    zero = output.new_zeros(())
+    loss = dict(
+        graph_ce_raw=zero,
+        graph_sdf_raw=zero,
+        graph_ce=zero,
+        graph_sdf=zero,
+        graph_radius_raw=zero,
+        graph_radius=zero,
+        graph_radius_valid_fraction=zero,
+    )
+    if mode in ("ce", "both"):
+        label = config.get("vessel_label", "Vessel")
+        if label not in args["dataset"]["label_names"]:
+            raise ValueError(
+                f"Graph vessel label {label!r} not found in dataset.label_names"
+            )
+        vessel_idx = args["dataset"]["label_names"].index(label)
+        weight = float(config.get("weight", 0.1))
+        if not math.isfinite(weight) or weight < 0:
+            raise ValueError("graph_supervision.weight must be finite and nonnegative")
+        target = torch.full(
+            (output.shape[0],), vessel_idx, dtype=torch.long, device=output.device
+        )
+        loss["graph_ce_raw"] = F.cross_entropy(output[..., sr_dims:seg_end], target)
+        loss["graph_ce"] = weight * loss["graph_ce_raw"]
+    if mode in ("sdf", "both"):
+        if sdf_target_mm is None or sdf_target_mm.shape != output.shape[:-1]:
+            raise ValueError("Graph SDF targets must match the sampled node count")
+        if output.shape[-1] != seg_end + 1 or not torch.isfinite(sdf_target_mm).all():
+            raise ValueError(
+                "Graph SDF supervision requires one SDF output and finite distance targets"
+            )
+        tau = float(args["optimizer"].get("sdf_trunc_mm", 5.0))
+        weight = float(config.get("sdf_weight", 0.1))
+        if not math.isfinite(tau) or tau <= 0:
+            raise ValueError("optimizer.sdf_trunc_mm must be finite and positive")
+        if not math.isfinite(weight) or weight < 0:
+            raise ValueError(
+                "graph_supervision.sdf_weight must be finite and nonnegative"
+            )
+        target = sdf_target_mm.clamp(-tau, tau) / tau
+        loss["graph_sdf_raw"] = F.l1_loss(output[..., seg_end], target)
+        loss["graph_sdf"] = weight * loss["graph_sdf_raw"]
+    if graph_radius_enabled(args):
+        radius_config = config["radius"]
+        weight = float(radius_config.get("weight", 0.05))
+        tolerance = float(radius_config.get("max_sdf_disagreement_mm", 0.5))
+        scale = float(radius_config.get("scale_to_mm", 1.0))
+        tau = float(args["optimizer"].get("sdf_trunc_mm", 5.0))
+        if not math.isfinite(weight) or weight < 0:
+            raise ValueError(
+                "graph_supervision.radius.weight must be finite and nonnegative"
+            )
+        if not math.isfinite(tolerance) or tolerance < 0:
+            raise ValueError(
+                "radius.max_sdf_disagreement_mm must be finite and nonnegative"
+            )
+        if not math.isfinite(scale) or scale <= 0 or not math.isfinite(tau) or tau <= 0:
+            raise ValueError(
+                "Radius unit scale and SDF truncation must be finite and positive"
+            )
+        if (
+            radius_target_mm is None
+            or sdf_target_mm is None
+            or radius_target_mm.shape != output.shape[:-1]
+            or sdf_target_mm.shape != output.shape[:-1]
+        ):
+            raise ValueError(
+                "Radius supervision requires matched SDF and radius targets for every graph node"
+            )
+        if output.shape[-1] != seg_end + 1 or not torch.isfinite(sdf_target_mm).all():
+            raise ValueError(
+                "Radius supervision requires one SDF output and finite SDF targets"
+            )
+        # Check radius agreement in physical mm before truncation can hide disagreements.
+        valid = (
+            torch.isfinite(radius_target_mm)
+            & (radius_target_mm > 0)
+            & (sdf_target_mm < 0)
+            & ((sdf_target_mm + radius_target_mm).abs() <= tolerance)
+        )
+        loss["graph_radius_valid_fraction"] = valid.float().mean()
+        if valid.any():
+            target = -radius_target_mm[valid].clamp(max=tau) / tau
+            loss["graph_radius_raw"] = F.smooth_l1_loss(
+                output[..., seg_end][valid], target
+            )
+        else:
+            loss["graph_radius_raw"] = output[..., seg_end].sum() * 0.0
+        loss["graph_radius"] = weight * loss["graph_radius_raw"]
+    loss["graph_raw"] = (
+        loss["graph_ce_raw"] + loss["graph_sdf_raw"] + loss["graph_radius_raw"]
+    )
+    loss["graph"] = loss["graph_ce"] + loss["graph_sdf"] + loss["graph_radius"]
+    return loss
 
 
 def scale_affine(affine, new_spacing, bbox):
     old_spacing = torch.sqrt(torch.sum(affine[:3, :3] ** 2, axis=0))
     scale = torch.tensor(new_spacing) / old_spacing
-    bbox_size = (bbox['max'] - bbox['min'])
-    shape = (torch.ceil_(bbox_size / scale).int())
+    bbox_size = bbox["max"] - bbox["min"]
+    shape = torch.ceil_(bbox_size / scale).int()
     affine[:3, :3] = torch.matmul(affine[:3, :3], torch.diag(scale))
-    affine[:3, 3] = affine[:3, 3] + (bbox['min'] * old_spacing)
+    affine[:3, 3] = affine[:3, 3] + (bbox["min"] * old_spacing)
     return affine, shape
 
 
@@ -108,7 +301,9 @@ def compute_ncc(prediction, reference):
     mean_pred = np.mean(prediction)
     mean_ref = np.mean(reference)
     numerator = np.sum((prediction - mean_pred) * (reference - mean_ref))
-    denominator = np.sqrt(np.sum((prediction - mean_pred) ** 2) * np.sum((reference - mean_ref) ** 2))
+    denominator = np.sqrt(
+        np.sum((prediction - mean_pred) ** 2) * np.sum((reference - mean_ref) ** 2)
+    )
     ncc = numerator / denominator
     return ncc.astype(np.float64)
 
@@ -142,14 +337,14 @@ def euler2rot(theta):
     s2 = torch.sin(theta[..., 1])
     c3 = torch.cos(theta[..., 2])
     s3 = torch.sin(theta[..., 2])
-    r11 = c1*c3 - c2*s1*s3
-    r12 = -c1*s3 - c2*c3*s1
-    r13 = s1*s2
-    r21 = c3*s1 + c1*c2*s3
-    r22 = c1*c2*c3 - s1*s3
-    r23 = -c1*s2
-    r31 = s2*s3
-    r32 = c3*s2
+    r11 = c1 * c3 - c2 * s1 * s3
+    r12 = -c1 * s3 - c2 * c3 * s1
+    r13 = s1 * s2
+    r21 = c3 * s1 + c1 * c2 * s3
+    r22 = c1 * c2 * c3 - s1 * s3
+    r23 = -c1 * s2
+    r31 = s2 * s3
+    r32 = c3 * s2
     r33 = c2
     R = torch.stack([r11, r12, r13, r21, r22, r23, r31, r32, r33], dim=-1)
     R = R.view(R.shape[:-1] + (3, 3))
@@ -157,11 +352,11 @@ def euler2rot(theta):
 
 
 def harmonize_labels(subject_seg, dataset):
-    if 'dhcp_neo' in dataset:
+    if "dhcp_neo" in dataset:
         subject_seg[subject_seg == 4] = 0
         subject_seg[subject_seg == 8] = 6
         subject_seg[subject_seg == 9] = 7
-    elif 'dhcp_fetal' in dataset or 'marsfet' in dataset:
+    elif "dhcp_fetal" in dataset or "marsfet" in dataset:
         subject_seg[subject_seg == 4] = 0
         subject_seg[subject_seg == 5] = 4
         subject_seg[subject_seg == 3] = 3
@@ -174,7 +369,7 @@ def harmonize_labels(subject_seg, dataset):
     return subject_seg
 
 
-def to_device(x, device='cuda'):
+def to_device(x, device="cuda"):
     if isinstance(x, torch.Tensor):
         return x.to(device, non_blocking=True)
     elif isinstance(x, (list, tuple)):
@@ -182,31 +377,33 @@ def to_device(x, device='cuda'):
     elif isinstance(x, dict):
         return {k: to_device(v, device) for k, v in x.items()}
     else:
-        return x 
-    
+        return x
+
 
 def normalize_condition(args, condition_key, condition_values, cond_scale=None):
-    c_scale = args['atlas_gen']['cond_scale'] if cond_scale is None else cond_scale
-    constraint = args['dataset']['constraints'][condition_key]
-    
-    if constraint.get('type') == 'categoric':
+    c_scale = args["atlas_gen"]["cond_scale"] if cond_scale is None else cond_scale
+    constraint = args["dataset"]["constraints"][condition_key]
+
+    if constraint.get("type") == "categoric":
         c_min = 0.0
-        c_max = float(len(constraint['values']) - 1)
+        c_max = float(len(constraint["values"]) - 1)
     else:
-        c_min = constraint['min']
-        c_max = constraint['max']
+        c_min = constraint["min"]
+        c_max = constraint["max"]
 
     if c_max > c_min:
         cv = 2 * ((condition_values - c_min) / (c_max - c_min) - 0.5)
     else:
         cv = 0.0
-        
+
     cv = cv * c_scale
     return cv
 
 
-def generate_combinations(args_data, conditions, keys=None, idx=0, current=None, results=None):
-    if conditions is None: 
+def generate_combinations(
+    args_data, conditions, keys=None, idx=0, current=None, results=None
+):
+    if conditions is None:
         return [[]]
     if keys is None:
         keys = list(conditions.keys())
@@ -216,68 +413,111 @@ def generate_combinations(args_data, conditions, keys=None, idx=0, current=None,
         results = []
 
     key = keys[idx]
-    values = conditions[key]['values']
+    values = conditions[key]["values"]
 
     for value in values:
-        if not conditions[key]['normed_values']:
+        if not conditions[key]["normed_values"]:
             value = normalize_condition(args_data, key, value)
         else:
-            value = value * args_data['atlas_gen']['cond_scale']
+            value = value * args_data["atlas_gen"]["cond_scale"]
         next_current = current + [value]
         if idx == len(keys) - 1:
             results.append(next_current)
         else:
-            generate_combinations(args_data, conditions, keys, idx + 1, next_current, results)
+            generate_combinations(
+                args_data, conditions, keys, idx + 1, next_current, results
+            )
 
     return results
 
 
-def generate_world_grid(args, normed=True, device='cpu'):
-    world_bbox = args['dataset']['world_bbox']
-    spacing = args['atlas_gen']['spacing']
-    
+def generate_world_grid(args, normed=True, device="cpu"):
+    world_bbox = args["dataset"]["world_bbox"]
+    spacing = args["atlas_gen"]["spacing"]
+
     x = torch.arange(0, world_bbox[0], spacing[0], device=device)
     y = torch.arange(0, world_bbox[1], spacing[1], device=device)
     z = torch.arange(0, world_bbox[2], spacing[2], device=device)
-    
+
     if normed:
         x = x / world_bbox[0] * 2 - 1
         y = y / world_bbox[1] * 2 - 1
         z = z / world_bbox[2] * 2 - 1
-        
-    grid = torch.meshgrid(x, y, z, indexing='ij')
+
+    grid = torch.meshgrid(x, y, z, indexing="ij")
     grid_shape = list(grid[0].shape)
     grid_coords = torch.stack(grid, dim=-1).reshape(-1, 3)
-    
-    affine = torch.diag(torch.tensor([spacing[0], spacing[1], spacing[2], 1.0], device=device))
+
+    affine = torch.diag(
+        torch.tensor([spacing[0], spacing[1], spacing[2], 1.0], device=device)
+    )
     origin_offset = -torch.tensor(world_bbox, device=device) / 2.0
     affine[:3, 3] = origin_offset
 
     return grid_coords, grid_shape, affine
 
 
+def sdf_export_enabled(args):
+    """Only export SDF for a model configured with SDF supervision."""
+    return (
+        bool(args["dataset"].get("sdf_key"))
+        and args["inr_decoder"].get("sdf_dim", 0) == 1
+    )
+
+
+def reconstruction_channels(args):
+    """Explicit (file label, channel index, dtype) mapping for inference volumes."""
+    modalities = args["dataset"]["modalities"]
+    sr_dims = sum(args["inr_decoder"]["out_dim"][:-1])
+    n_classes = args["inr_decoder"]["out_dim"][-1]
+    if len(modalities) != sr_dims + 1:
+        raise ValueError(
+            "Reconstruction modalities must contain images followed by Seg"
+        )
+    channels = [
+        (name, i, np.int16 if i == sr_dims else np.float32)
+        for i, name in enumerate(modalities)
+    ]
+    if args.get("save_certainty_maps", False):
+        labels = args["dataset"]["label_names"]
+        if len(labels) != n_classes:
+            raise ValueError("Tissue label count does not match decoder channels")
+        channels += [
+            (f"CertaintyMaps/{label}", sr_dims + 1 + i, np.float32)
+            for i, label in enumerate(labels)
+            if label.lower() != "background"
+        ]
+    if sdf_export_enabled(args):
+        sdf_index = sr_dims + 1 + n_classes
+        channels += [
+            ("SDF", sdf_index, np.float32),
+            ("VesselMask", sdf_index + 1, np.uint8),
+        ]
+    return channels
+
+
 def save_atlas(args, atlas, affine, temp_steps, condition_vectors, epoch):
-    x, y, z, num_mods, n_conds, t = atlas.shape
     if isinstance(atlas, torch.Tensor):
-        try:
-            atlas = atlas.detach().cpu().numpy()
-        except:
-            atlas = atlas.numpy()
+        atlas = atlas.detach().cpu().numpy()
     if isinstance(affine, torch.Tensor):
         affine = affine.detach().cpu().numpy()
-    mod_labels = args['dataset']['modalities']
-    if args['save_certainty_maps']:
-        seg_labels = [
-            f"CertaintyMaps/{label}" 
-            for label in args['dataset']['label_names'] 
-            if label.lower() not in ['Background']
-        ]
-        mod_labels = mod_labels + seg_labels
+    channels = reconstruction_channels(args)
+    if atlas.ndim != 6 or atlas.shape[3] <= max(i for _, i, _ in channels):
+        raise ValueError("Atlas is missing required reconstruction channels")
+    n_conds = atlas.shape[4]
     for c in range(n_conds):
-        for i in range(len(mod_labels)):
-            filename = (f'{mod_labels[i]}={temp_steps[0]}-{temp_steps[-1]}_cond={c}_ep={epoch}.nii.gz')
-            save_img(atlas[..., i, c, :], affine=affine, output_path=args['output_dir'], filename=filename)
-    print('Atlas saved to {}'.format(args['output_dir']))
+        for name, i, dtype in channels:
+            filename = (
+                f"{name}={temp_steps[0]}-{temp_steps[-1]}_cond={c}_ep={epoch}.nii.gz"
+            )
+            save_img(
+                atlas[..., i, c, :].astype(dtype),
+                affine=affine,
+                output_path=args["output_dir"],
+                filename=filename,
+                spatial_units="mm" if name in ("SDF", "VesselMask") else None,
+            )
+    print("Atlas saved to {}".format(args["output_dir"]))
 
 
 def typecheck_img_affine(img, affine):
@@ -285,50 +525,85 @@ def typecheck_img_affine(img, affine):
         img = img.detach().cpu().numpy()
     if isinstance(affine, torch.Tensor):
         affine = affine.detach().cpu().numpy()
-    if img.dtype == 'int64' or img.dtype == 'int32':
+    if img.dtype == "int64" or img.dtype == "int32":
         img = img.astype(np.int16)
-    elif img.dtype == 'float64':
+    elif img.dtype == "float64":
         img = img.astype(np.float32)
     return img, affine
 
 
-def save_subject(args, img, affine, sub_row_df=None, sub_name=None, epoch=0, split='train'):
+def save_subject(
+    args, img, affine, sub_row_df=None, sub_name=None, epoch=0, split="train"
+):
     if sub_row_df is not None:
-        sub_name = sub_row_df['subject_id']
+        sub_name = sub_row_df["subject_id"]
     elif sub_name is None:
         print("No subject name provided, assigning random subject name.")
-        sub_name = 'subject_' + str(np.random.randint(100000))
+        sub_name = "subject_" + str(np.random.randint(100000))
 
     img, affine = typecheck_img_affine(img, affine)
+    channels = reconstruction_channels(args)
+    if img.shape[-1] <= max(i for _, i, _ in channels):
+        raise ValueError("Subject volume is missing required reconstruction channels")
     mytx = None
-    modalities = args['dataset']['modalities']
+    modalities = args["dataset"]["modalities"]
     for i, mod in enumerate(modalities):
-        if i == len(modalities)-1 and 'Seg' in mod:
+        if i == len(modalities) - 1:
             img_mod = img[..., i].astype(np.int16)
         else:
             img_mod = img[..., i].astype(np.float32)
-        filename = f'{split}/{mod}_{sub_name}_ep={epoch}.nii.gz'
-        save_img(img_mod, affine, args['output_dir'], filename)
+        filename = f"{split}/{mod}_{sub_name}_ep={epoch}.nii.gz"
+        save_img(img_mod, affine, args["output_dir"], filename)
         if epoch == 0 and sub_row_df is not None:
-            is_seg = (i == len(modalities)-1 and 'Seg' in mod)
+            is_seg = i == len(modalities) - 1
             pred_mod_nii = nib.Nifti1Image(img_mod, affine)
-            pred_mask_nii = nib.Nifti1Image(img[..., -1], affine)
+            pred_mask_nii = nib.Nifti1Image(img[..., len(modalities) - 1], affine)
             ref_mod_nii = nib.load(sub_row_df[mod])
-            pred_mod_nii, ref_mod_nii, mytx = reg_imgs(pred_mod_nii, ref_mod_nii, pred_mask_nii, mytx, 'Rigid', is_seg)
-            filename_ref = f'{split}/{mod}_{sub_name}_ref.nii.gz'
-            save_img(ref_mod_nii.get_fdata(), ref_mod_nii.affine, args['output_dir'], filename_ref)
+            pred_mod_nii, ref_mod_nii, mytx = reg_imgs(
+                pred_mod_nii, ref_mod_nii, pred_mask_nii, mytx, "Rigid", is_seg
+            )
+            filename_ref = f"{split}/{mod}_{sub_name}_ref.nii.gz"
+            save_img(
+                ref_mod_nii.get_fdata(),
+                ref_mod_nii.affine,
+                args["output_dir"],
+                filename_ref,
+            )
+
+    save_subject_extras(args, img, affine, sub_name, epoch, split)
 
 
-def save_img(img, affine, output_path, filename):
-    if img.dtype == 'int64' or img.dtype == 'int32':
+def save_subject_extras(args, img, affine, sub_name, epoch=0, split="train"):
+    """Save tissue probabilities and SDF outputs in the inference grid."""
+    img, affine = typecheck_img_affine(img, affine)
+    channels = reconstruction_channels(args)
+    if img.shape[-1] <= max(i for _, i, _ in channels):
+        raise ValueError("Subject volume is missing required reconstruction channels")
+    for name, i, dtype in channels:
+        if i < len(args["dataset"]["modalities"]):
+            continue
+        filename = f"{split}/{name}_{sub_name}_ep={epoch}.nii.gz"
+        save_img(
+            img[..., i].astype(dtype),
+            affine,
+            args["output_dir"],
+            filename,
+            spatial_units="mm" if name in ("SDF", "VesselMask") else None,
+        )
+
+
+def save_img(img, affine, output_path, filename, spatial_units=None):
+    if img.dtype == "int64" or img.dtype == "int32":
         img = img.astype(np.int16)
-    elif img.dtype == 'float64':
+    elif img.dtype == "float64":
         img = img.astype(np.float32)
     full_path = os.path.join(output_path, filename)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     img_nii = nib.Nifti1Image(img, affine)
+    if spatial_units is not None:
+        img_nii.header.set_xyzt_units(spatial_units)
     nib.save(img_nii, full_path)
-    print(f'Saved {filename} to {output_path}')
+    print(f"Saved {filename} to {output_path}")
 
 
 def assert_correct_coord_normalization(coords, min_val=-1.0, max_val=1.0):
@@ -341,6 +616,7 @@ def assert_correct_coord_normalization(coords, min_val=-1.0, max_val=1.0):
     assert min_z >= min_val, f"min_z = {min_z} is less than min_val = {min_val}"
     assert max_z <= max_val, f"max_z = {max_z} is greater than max_val = {max_val}"
 
+
 def squeeze_modalities(modality, path, write2disk=False):
     if modality.ndim == 4:
         mod_np = modality.get_fdata()
@@ -352,11 +628,16 @@ def squeeze_modalities(modality, path, write2disk=False):
     else:
         return modality
 
-def add_background_halo(label_names, seg_nii, halo_width=1.5, background_label_str='Background'):
+
+def add_background_halo(
+    label_names, seg_nii, halo_width=1.5, background_label_str="Background"
+):
     seg = seg_nii.get_fdata()
     bg_label = label_names.index(background_label_str)
-    mask_bg = (seg>0).astype(np.float32)
-    mask_bg = (ndi.gaussian_filter(mask_bg, sigma=halo_width) > 0.001).astype(np.uint8) * bg_label
+    mask_bg = (seg > 0).astype(np.float32)
+    mask_bg = (ndi.gaussian_filter(mask_bg, sigma=halo_width) > 0.001).astype(
+        np.uint8
+    ) * bg_label
     mask_bg[seg > 0] = seg[seg > 0]
     return nib.Nifti1Image(mask_bg, seg_nii.affine)
 
@@ -366,141 +647,139 @@ def mask_nifti(nii, mask):
     data *= mask
     return nib.Nifti1Image(data, nii.affine)
 
-# ================= [新增] 替换 ants.from_nibabel =================
+
 def nib_to_ants(nii_img):
-    """
-    Manually convert Nibabel image to ANTs image, bypassing ants.from_nibabel
-    which might be missing in older antspy versions.
-    """
-    # 1. Get Data
+    """Convert a NIfTI image to ANTs while preserving its physical geometry."""
     data = nii_img.get_fdata().astype(np.float32)
-    
-    # 2. Get Affine
+
     affine = nii_img.affine
-    
-    # 3. Decompose Affine
-    # Spacing
-    spacing = np.sqrt(np.sum(affine[:3, :3]**2, axis=0))
-    # Origin
+
+    spacing = np.sqrt(np.sum(affine[:3, :3] ** 2, axis=0))
     origin = affine[:3, 3]
-    # Direction (Normalized Rotation Matrix)
-    # Avoid division by zero
     spacing_nonzero = spacing.copy()
     spacing_nonzero[spacing_nonzero == 0] = 1.0
-    direction = affine[:3, :3] @ np.diag(1/spacing_nonzero)
-    
-    # 4. Create ANTs Image
-    # Note: Nibabel is (x,y,z), ANTs is (x,y,z). 
-    # Warning: Direction handling can be tricky (RAS vs LPS). 
-    # Usually passing direction matrix explicitly preserves physical alignment.
-    img_ants = ants.from_numpy(data=data, 
-                               origin=origin.tolist(), 
-                               spacing=spacing.tolist(), 
-                               direction=direction)
+    direction = affine[:3, :3] @ np.diag(1 / spacing_nonzero)
+
+    img_ants = ants.from_numpy(
+        data=data, origin=origin.tolist(), spacing=spacing.tolist(), direction=direction
+    )
     return img_ants
-# ===============================================================
 
-def compute_metrics(args, pred, affine, df_row_dict, epoch, split, reg_type='Rigid', bg_label=None):
-    """
-    Compute metrics for a predicted subject.
-    Updated to use nib_to_ants instead of ants.from_nibabel.
-    """
+
+def compute_metrics(
+    args, pred, affine, df_row_dict, epoch, split, reg_type="Rigid", bg_label=None
+):
+    """Compute image and tissue metrics on the reference image grids."""
     pred, affine = typecheck_img_affine(pred, affine)
-    metrics = {'Subject': df_row_dict['subject_id'], 'PSNR': [], 'SSIM': [], 'DICE': []}
-    modalities = args['dataset']['modalities']
-    sub_id = df_row_dict['subject_id']
+    metrics = {"Subject": df_row_dict["subject_id"], "PSNR": [], "SSIM": [], "DICE": []}
+    modalities = args["dataset"]["modalities"]
+    sub_id = df_row_dict["subject_id"]
 
-    if bg_label is None and 'Background' in args['dataset']['label_names']:
-        bg_label = args['dataset']['label_names'].index('Background')
+    if bg_label is None and "Background" in args["dataset"]["label_names"]:
+        bg_label = args["dataset"]["label_names"].index("Background")
     else:
-        bg_label = 0 
+        bg_label = 0
 
     for i, mod in enumerate(modalities):
-        is_seg = (i == len(modalities)-1 and ('Seg' in mod or 'Mask' in mod))
-        
+        is_seg = i == len(modalities) - 1 and ("Seg" in mod or "Mask" in mod)
+
         mod_ref_nii = nib.load(df_row_dict[mod])
         mod_pred_nii = nib.Nifti1Image(pred[..., i], affine)
 
-        # [修改] 使用 nib_to_ants
         try:
-            fix = nib_to_ants(mod_ref_nii) # GT
-            mov = nib_to_ants(mod_pred_nii) # Pred
+            fix = nib_to_ants(mod_ref_nii)
+            mov = nib_to_ants(mod_pred_nii)
         except Exception as e:
             print(f"[Error] Failed to convert nifti to ants for {mod}: {e}. Skipping.")
             continue
 
         try:
-            interp_type = 'genericLabel' if is_seg else 'linear'
-            # 重采样 Pred (Mov) 到 GT (Fix) 的网格
+            interp_type = "genericLabel" if is_seg else "linear"
             mov = ants.resample_image_to_target(mov, fix, interp_type=interp_type)
         except Exception as e:
             print(f"[Error] Resampling failed for {mod}: {e}. Skipping metric.")
             continue
 
         if not is_seg:
-             mov_arr = mov.numpy()
-             fix_arr = fix.numpy()
-             if mov_arr.max() - mov_arr.min() > 1e-6:
-                 mov = (mov - mov_arr.min()) / (mov_arr.max() - mov_arr.min())
-             if fix_arr.max() - fix_arr.min() > 1e-6:
-                 fix = (fix - fix_arr.min()) / (fix_arr.max() - fix_arr.min())
+            mov_arr = mov.numpy()
+            fix_arr = fix.numpy()
+            if mov_arr.max() - mov_arr.min() > 1e-6:
+                mov = (mov - mov_arr.min()) / (mov_arr.max() - mov_arr.min())
+            if fix_arr.max() - fix_arr.min() > 1e-6:
+                fix = (fix - fix_arr.min()) / (fix_arr.max() - fix_arr.min())
 
-        #mod_pred_reg_nii = ants.to_nibabel(mov)
-        #mod_ref_nii = ants.to_nibabel(fix)
         mod_pred_reg_nii = ants_to_nib(mov)
         mod_ref_nii = ants_to_nib(fix)
-        
-        bbox, _ = get_bbox(mod_ref_nii) 
-        x_min, y_min, z_min = bbox[0]
-        x_max, y_max, z_max = bbox[1]+1
-        
-        mod_pred_reg_cropped = mod_pred_reg_nii.get_fdata()[x_min:x_max, y_min:y_max, z_min:z_max]
-        mod_ref_cropped = mod_ref_nii.get_fdata()[x_min:x_max, y_min:y_max, z_min:z_max]
-        
-        if not is_seg:
-            metrics['PSNR'].append(psnr_metric(mod_pred_reg_cropped, mod_ref_cropped, data_range=1.0))
-            metrics['SSIM'].append(ssim_metric(mod_pred_reg_cropped, mod_ref_cropped, data_range=1.0))
-        else:
-            metrics['DICE'].append(compute_dice(mod_pred_reg_cropped, mod_ref_cropped, bg_label))
-        
-        if args['save_imgs'][split]:
-            fn_pred = f'{split}/{mod}_{sub_id}_ep={epoch}.nii.gz'
-            fn_ref = f'{split}/{mod}_{sub_id}_ref.nii.gz'
-            save_img(mod_pred_reg_nii.get_fdata(), mod_pred_reg_nii.affine, args['output_dir'], fn_pred)
-            save_img(mod_ref_nii.get_fdata(), mod_ref_nii.affine, args['output_dir'], fn_ref)
 
+        bbox, _ = get_bbox(mod_ref_nii)
+        x_min, y_min, z_min = bbox[0]
+        x_max, y_max, z_max = bbox[1] + 1
+
+        mod_pred_reg_cropped = mod_pred_reg_nii.get_fdata()[
+            x_min:x_max, y_min:y_max, z_min:z_max
+        ]
+        mod_ref_cropped = mod_ref_nii.get_fdata()[x_min:x_max, y_min:y_max, z_min:z_max]
+
+        if not is_seg:
+            metrics["PSNR"].append(
+                psnr_metric(mod_pred_reg_cropped, mod_ref_cropped, data_range=1.0)
+            )
+            metrics["SSIM"].append(
+                ssim_metric(mod_pred_reg_cropped, mod_ref_cropped, data_range=1.0)
+            )
+        else:
+            metrics["DICE"].append(
+                compute_dice(mod_pred_reg_cropped, mod_ref_cropped, bg_label)
+            )
+
+        if args["save_imgs"][split]:
+            fn_pred = f"{split}/{mod}_{sub_id}_ep={epoch}.nii.gz"
+            fn_ref = f"{split}/{mod}_{sub_id}_ref.nii.gz"
+            save_img(
+                mod_pred_reg_nii.get_fdata(),
+                mod_pred_reg_nii.affine,
+                args["output_dir"],
+                fn_pred,
+            )
+            save_img(
+                mod_ref_nii.get_fdata(), mod_ref_nii.affine, args["output_dir"], fn_ref
+            )
+
+    if args["save_imgs"][split]:
+        save_subject_extras(args, pred, affine, sub_id, epoch, split)
     return metrics
-    
-def reg_imgs(fix_nii, mov_nii, mask_mov_nii=None, mytx=None, reg_type='Rigid', is_seg=False):
-    """
-    Updated to use nib_to_ants.
-    """
-    # 辅助函数：创建全零图（保底）
+
+
+def reg_imgs(
+    fix_nii, mov_nii, mask_mov_nii=None, mytx=None, reg_type="Rigid", is_seg=False
+):
+    """Register or resample the moving image to the fixed image grid."""
+
     def get_zeros_like_fixed(fixed_nii):
         zeros_data = np.zeros(fixed_nii.shape, dtype=fixed_nii.get_fdata().dtype)
         return nib.Nifti1Image(zeros_data, fixed_nii.affine, fixed_nii.header)
 
     try:
-        # [修改] 使用 nib_to_ants
         fix = nib_to_ants(fix_nii)
         mov = nib_to_ants(mov_nii)
     except Exception as e:
         print(f"[Error] Failed to convert nifti to ants: {e}")
         return fix_nii, get_zeros_like_fixed(fix_nii), None
 
-    # Mask 处理
     mask_mov = None
     if mask_mov_nii is not None:
         try:
-             mask_mov = nib_to_ants(mask_mov_nii) > 0
+            mask_mov = nib_to_ants(mask_mov_nii) > 0
         except:
-             pass
+            pass
 
-    ip = 'genericLabel' if is_seg else 'linear'
+    ip = "genericLabel" if is_seg else "linear"
     fallback = False
 
     if np.sum(np.abs(fix.numpy())) < 1e-3:
-        print("[Warning] Fixed image (Pred) is empty. Registration skipped. Using Identity Resample.")
+        print(
+            "[Warning] Fixed image (Pred) is empty. Registration skipped. Using Identity Resample."
+        )
         fallback = True
     elif np.sum(np.abs(mov.numpy())) < 1e-3:
         print("[Warning] Moving image (Ref) is empty.")
@@ -508,14 +787,16 @@ def reg_imgs(fix_nii, mov_nii, mask_mov_nii=None, mytx=None, reg_type='Rigid', i
 
     if not fallback and mytx is None:
         if mask_mov is not None:
-            mov = mov * mask_mov 
+            mov = mov * mask_mov
         try:
             mytx = ants.registration(fix, mov, type_of_transform=reg_type)
-            mov_reg = mytx['warpedmovout']
+            mov_reg = mytx["warpedmovout"]
         except Exception as e:
-            print(f"[Warning] ANTs registration failed: {e}. Falling back to Identity Transform.")
+            print(
+                f"[Warning] ANTs registration failed: {e}. Falling back to Identity Transform."
+            )
             fallback = True
-    
+
     if fallback:
         try:
             mov_reg = ants.resample_image_to_target(mov, fix, interp_type=ip)
@@ -526,187 +807,194 @@ def reg_imgs(fix_nii, mov_nii, mask_mov_nii=None, mytx=None, reg_type='Rigid', i
 
     elif mytx is not None:
         try:
-            if 'fwdtransforms' in mytx:
-                mov_reg = ants.apply_transforms(fix, mov, mytx['fwdtransforms'], interpolator=ip)
+            if "fwdtransforms" in mytx:
+                mov_reg = ants.apply_transforms(
+                    fix, mov, mytx["fwdtransforms"], interpolator=ip
+                )
             else:
-                pass 
+                pass
         except Exception as e:
-             print(f"[Error] Apply transforms failed: {e}. Returning zeros.")
-             return fix_nii, get_zeros_like_fixed(fix_nii), None
+            print(f"[Error] Apply transforms failed: {e}. Returning zeros.")
+            return fix_nii, get_zeros_like_fixed(fix_nii), None
 
-    if mask_mov is not None and mytx is not None and not fallback: 
+    if mask_mov is not None and mytx is not None and not fallback:
         try:
-            mask_mov_reg = ants.apply_transforms(fix, mask_mov, mytx['fwdtransforms'], interpolator='genericLabel')
+            mask_mov_reg = ants.apply_transforms(
+                fix, mask_mov, mytx["fwdtransforms"], interpolator="genericLabel"
+            )
             fix = fix * mask_mov_reg
         except:
             pass
 
-    if not is_seg: 
+    if not is_seg:
         mov_arr = mov_reg.numpy()
         mov_min, mov_max = mov_arr.min(), mov_arr.max()
         if (mov_max - mov_min) > 1e-6:
             mov_reg = (mov_reg - mov_min) / (mov_max - mov_min)
 
-    #fix_nii_out = ants.to_nibabel(fix)
-    #mov_reg_nii_out = ants.to_nibabel(mov_reg)
     fix_nii_out = ants_to_nib(fix)
     mov_reg_nii_out = ants_to_nib(mov_reg)
-    
+
     return fix_nii_out, mov_reg_nii_out, mytx
+
 
 def get_bbox(img):
     if isinstance(img, nib.Nifti1Image):
         img = img.get_fdata()
-    
+
     non_zero_voxels = np.argwhere(img != 0)
-    
+
     if non_zero_voxels.size == 0:
         shape = img.shape
         min_coords = np.array([0, 0, 0])
-        max_coords = np.array([shape[0]-1, shape[1]-1, shape[2]-1])
+        max_coords = np.array([shape[0] - 1, shape[1] - 1, shape[2] - 1])
         return np.stack([min_coords, max_coords], axis=0), img
 
     min_coords = non_zero_voxels.min(axis=0)
     max_coords = non_zero_voxels.max(axis=0)
-    img_cropped = img[min_coords[0]:max_coords[0]+1, 
-                      min_coords[1]:max_coords[1]+1, 
-                      min_coords[2]:max_coords[2]+1]
+    img_cropped = img[
+        min_coords[0] : max_coords[0] + 1,
+        min_coords[1] : max_coords[1] + 1,
+        min_coords[2] : max_coords[2] + 1,
+    ]
     return np.stack([min_coords, max_coords], axis=0), img_cropped
+
 
 def compute_dice(pred, ref, bg_label):
     if pred.shape != ref.shape:
         raise ValueError("The shape of pred and ref must be the same.")
-    
+
     labels = np.union1d(np.unique(pred), np.unique(ref))
     labels = labels[(labels != 0) & (labels != bg_label)]
-    
+
     if len(labels) == 0:
         return 1.0
-    
+
     dice_scores = []
     for label in labels:
-        pred_mask = (pred == label)
-        ref_mask = (ref == label)
+        pred_mask = pred == label
+        ref_mask = ref == label
         intersection = np.count_nonzero(pred_mask & ref_mask)
         pred_sum = np.count_nonzero(pred_mask)
         ref_sum = np.count_nonzero(ref_mask)
-        
+
         if pred_sum + ref_sum == 0:
             dice = 1.0
         else:
             dice = (2.0 * intersection) / (pred_sum + ref_sum)
         dice_scores.append(dice)
-    
+
     return np.mean(dice_scores)
 
-def log_metrics(args, metrics, epoch, df=None, split='train'):
+
+def log_metrics(args, metrics, epoch, df=None, split="train"):
     if not metrics or len(metrics) == 0:
         print(f"[{split}] No metrics computed. Skipping metric logging.")
         return
     metrics_keys = list(metrics[0].keys())
-    mod_keys = args['dataset']['modalities']
+    mod_keys = args["dataset"]["modalities"]
     for metric_key in metrics_keys:
-        if metric_key == 'Subject': continue
+        if metric_key == "Subject":
+            continue
         metric_vals = [m[metric_key][0] for m in metrics]
-        metric_vals = np.array(metric_vals) 
+        metric_vals = np.array(metric_vals)
         metric_mean = np.mean(metric_vals, axis=0).item()
         metric_std = np.std(metric_vals, axis=0).item()
         print(f"{metric_key}: {metric_mean:.3f} +/- {metric_std:.3f}")
-        if args['logging']: wd.log({f"{split}/{metric_key}": metric_mean})
+        if args["logging"]:
+            wd.log({f"{split}/{metric_key}": metric_mean})
 
-    with open(os.path.join(args['output_dir'], f'{split}/{split}_metrics_ep={epoch}.json'), 'w') as f:
+    with open(
+        os.path.join(args["output_dir"], f"{split}/{split}_metrics_ep={epoch}.json"),
+        "w",
+    ) as f:
         json.dump(metrics, f, indent=4, cls=NumpyEncoder)
     if df is not None:
-        df.to_csv(os.path.join(args['output_dir'], f'{split}/{split}_df.csv'), index=False)
+        df.to_csv(
+            os.path.join(args["output_dir"], f"{split}/{split}_df.csv"), index=False
+        )
 
 
 def log_loss(loss, epoch, split, log=True):
     if log:
-        wd.log({
-            f"{split}/loss":
-            loss['total'].item()
-        })
+        wd.log({f"{split}/loss": loss["total"].item()})
 
-        wd.log({
-            f"{split}/loss_sr":
-            loss['sr'].item()
-        })
+        wd.log({f"{split}/loss_sr": loss["sr"].item()})
 
-        wd.log({
-            f"{split}/loss_seg":
-            loss['seg'].item()
-        })
+        wd.log({f"{split}/loss_seg": loss["seg"].item()})
 
-        if 'graph' in loss:
-            wd.log({
-                f"{split}/loss_graph":
-                loss['graph'].item()
-            })
+        if "sdf" in loss:
+            wd.log(
+                {
+                    f"{split}/loss_sdf": loss["sdf"].item(),
+                    f"{split}/loss_sdf_raw": loss["sdf_raw"].item(),
+                }
+            )
 
-        if 'graph_raw' in loss:
-            wd.log({
-                f"{split}/loss_graph_raw":
-                loss['graph_raw'].item()
-            })
+        if "graph" in loss:
+            wd.log({f"{split}/loss_graph": loss["graph"].item()})
 
-        wd.log({
-            f"{split}/loss_moe":
-            loss['moe'].item()
-        })
+        for key in (
+            "graph_ce_raw",
+            "graph_sdf_raw",
+            "graph_ce",
+            "graph_sdf",
+            "graph_radius_raw",
+            "graph_radius",
+            "graph_radius_valid_fraction",
+        ):
+            if key in loss:
+                wd.log({f"{split}/loss_{key}": loss[key].item()})
 
+        if "graph_raw" in loss:
+            wd.log({f"{split}/loss_graph_raw": loss["graph_raw"].item()})
+
+        wd.log({f"{split}/loss_moe": loss["moe"].item()})
 
 
 def normalize_intensities(values, norm_type):
     values = np.clip(values, 0, None)
     values_mod = values[..., :-1]
-    if norm_type == 'minmax':
+    if norm_type == "minmax":
         v_min, v_max = values_mod.min(axis=0), values_mod.max(axis=0)
         values_mod = (values_mod - v_min) / (v_max - v_min)
-    elif norm_type == 'zscore':
+    elif norm_type == "zscore":
         v_mean, v_std = values_mod.mean(axis=0), values_mod.std(axis=0)
         values_mod = (values_mod - v_mean) / (v_std + 1e-5)
     values[..., :-1] = values_mod
     return values
 
+
 def ants_to_nib(ants_img):
-    """
-    Manually convert ANTs image to Nibabel image, bypassing ants.to_nibabel.
-    """
-    # 1. Get Data (ANTs stores as numpy)
+    """Convert an ANTs image to NIfTI while preserving its physical geometry."""
     data = ants_img.numpy().astype(np.float32)
-    
-    # 2. Reconstruct Affine Matrix
-    # ANTs stores: origin (3,), spacing (3,), direction (3x3)
-    # Affine = [Direction * diag(Spacing) | Origin]
-    
+
     spacing = np.array(ants_img.spacing)
     origin = np.array(ants_img.origin)
     direction = np.array(ants_img.direction)
-    
+
     affine = np.eye(4)
-    # Rotation & Scaling part
     affine[:3, :3] = direction @ np.diag(spacing)
-    # Translation part
     affine[:3, 3] = origin
-    
-    # 3. Create Nibabel Image
+
     return nib.Nifti1Image(data, affine)
 
+
 def denormalize_conditions(args, cond_key, values):
-    constraint = args['dataset']['constraints'][cond_key]
-    
-    if constraint.get('type') == 'categoric':
+    constraint = args["dataset"]["constraints"][cond_key]
+
+    if constraint.get("type") == "categoric":
         c_min = 0.0
-        c_max = float(len(constraint['values']) - 1)
+        c_max = float(len(constraint["values"]) - 1)
     else:
-        c_min = constraint['min']
-        c_max = constraint['max']
-        
-    c_scale = args['atlas_gen']['cond_scale']
-    
+        c_min = constraint["min"]
+        c_max = constraint["max"]
+
+    c_scale = args["atlas_gen"]["cond_scale"]
+
     if c_max > c_min:
         values = (values / c_scale + 1) / 2 * (c_max - c_min) + c_min
     else:
         values = values * 0 + c_min
-        
+
     return values

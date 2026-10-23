@@ -1,27 +1,9 @@
-"""Graph supervision utilities for VATL_MM (V1).
+"""Cache and sample subject vessel graphs in normalized atlas coordinates.
 
-V1 goal
--------
-Keep the existing VATL-MM architecture unchanged and add only positive
-vessel supervision at graph-node coordinates.
-
-The graph pickle is expected to contain either:
-    1) a dict with key ``"graph"`` holding a NetworkX graph, or
-    2) a NetworkX graph directly.
-
-For the IXI graph format inspected for this project, every node contains:
-    - ``pos``: world / physical coordinate in mm, shape (3,)
-    - ``radius``: vessel radius (kept in the cache, not used by V1)
-
-The normalization implemented here intentionally mirrors
-``Data.load_coords_and_values`` in ``data_loading/dataset.py``:
-
-    normalized_coord = (world_coord - geometric_center) / (world_bbox / 2)
-
-where ``geometric_center`` is obtained by applying the segmentation affine
-(the last configured modality) to the center voxel index defined from the
-first modality shape. The existing INR_Decoder then applies the learnable
-subject rigid transform, exactly as it does for ordinary voxel coordinates.
+Graph positions are world coordinates in mm. Optional native-space SDF
+targets are interpolated before learned coordinate transforms. Radius
+constraints are enabled separately and checked against the current SDF.
+Normalization matches Data: (world - geometric_center) / (world_bbox / 2).
 """
 
 from __future__ import annotations
@@ -37,26 +19,11 @@ import torch
 
 
 class GraphStore:
-    """Lazy CPU cache for subject-specific vessel graphs.
+    """Lazy CPU cache indexed by the filtered training DataFrame row order.
 
-    Parameters
-    ----------
-    args:
-        Full VATL configuration dictionary.
-    dataframe:
-        The *already filtered/sampled* DataFrame used by ``Data``.  Its row
-        order must therefore be identical to the ``idx_df`` indices produced
-        by the current Dataset.
-    graph_key:
-        TSV column containing Graph.pkl paths. Defaults to
-        ``args['graph_supervision']['graph_key']`` and then ``"Graph"``.
-
-    Notes
-    -----
-    - Graphs are loaded lazily, once per subject, and cached on CPU.
-    - V1 samples graph nodes uniformly.
-    - No edge/path/branch loss is implemented here yet.
-    - ``radius`` is cached for future versions but is deliberately unused in V1.
+    Accept NetworkX graphs directly or in a pickle dictionary under "graph".
+    Nodes contain world-space "pos" and optional scalar "radius" attributes.
+    Only graph nodes inside world_bbox are retained. No edge loss is applied.
     """
 
     def __init__(
@@ -85,15 +52,10 @@ class GraphStore:
                 "GraphStore expects at least one image modality and one segmentation modality."
             )
 
-        # Match Data.load_coords_and_values exactly:
-        #   img_shape <- first modality
-        #   affine    <- last modality (Seg)
         self.shape_reference_key = modalities[0]
         self.affine_reference_key = modalities[-1]
 
-        self.world_bbox = np.asarray(
-            args["dataset"]["world_bbox"], dtype=np.float64
-        )
+        self.world_bbox = np.asarray(args["dataset"]["world_bbox"], dtype=np.float64)
         if self.world_bbox.shape != (3,) or np.any(self.world_bbox <= 0):
             raise ValueError(
                 f"dataset.world_bbox must be three positive values, got {self.world_bbox}."
@@ -143,16 +105,12 @@ class GraphStore:
         affine_path = row[self.affine_reference_key]
 
         if not isinstance(shape_path, str) or not shape_path:
-            raise ValueError(
-                f"Invalid {self.shape_reference_key} path: {shape_path!r}"
-            )
+            raise ValueError(f"Invalid {self.shape_reference_key} path: {shape_path!r}")
         if not isinstance(affine_path, str) or not affine_path:
             raise ValueError(
                 f"Invalid {self.affine_reference_key} path: {affine_path!r}"
             )
 
-        # Lazy import keeps graph-format inspection usable even in lightweight
-        # environments; VATL_MM itself already depends on nibabel.
         import nibabel as nib
 
         shape_nii = nib.load(shape_path)
@@ -166,9 +124,6 @@ class GraphStore:
         img_shape = np.asarray(shape_nii.shape[:3], dtype=np.float64)
         affine = np.asarray(affine_nii.affine, dtype=np.float64)
 
-        # This reproduces dataset.py:
-        #   img_center_index = np.array(img_shape) / 2.0
-        #   geometric_center = nib.affines.apply_affine(affine, img_center_index)
         img_center_index = img_shape / 2.0
         geometric_center = nib.affines.apply_affine(affine, img_center_index)
 
@@ -235,10 +190,10 @@ class GraphStore:
             )
 
         if not np.all(np.isfinite(pos_world)):
-            raise ValueError(f"Non-finite graph node coordinates found in {graph_path}.")
+            raise ValueError(
+                f"Non-finite graph node coordinates found in {graph_path}."
+            )
 
-        # Radius is not used by V1, but retaining it now avoids re-reading the
-        # pickle when later experiments start using vessel calibre.
         radius = np.asarray(
             [graph.nodes[node_id].get("radius", np.nan) for node_id in node_ids],
             dtype=np.float32,
@@ -246,8 +201,6 @@ class GraphStore:
 
         coords_norm = self.normalize_world_coords(pos_world, row)
 
-        # Match the current dataset world-BBox policy: graph nodes outside the
-        # INR field of view are excluded from V1 supervision.
         inside = np.all(np.abs(coords_norm) <= 1.0, axis=1)
 
         valid_indices = np.flatnonzero(inside)
@@ -263,9 +216,7 @@ class GraphStore:
             )
 
         cached = {
-            # Fields used by V1
             "coords": torch.from_numpy(coords_norm_valid),
-            # Debug/future fields
             "pos_world": torch.from_numpy(pos_world_valid),
             "radius": torch.from_numpy(radius_valid),
             "node_ids": node_ids_valid,
@@ -288,11 +239,14 @@ class GraphStore:
         idx_df: int,
         n_points: int,
         device: Optional[torch.device] = None,
-    ) -> torch.Tensor:
-        """Uniformly sample V1 graph-node coordinates for one subject.
+        return_sdf: bool = False,
+        return_radius: bool = False,
+    ):
+        """Sample matched graph coordinates and optional scalar targets.
 
-        Sampling is without replacement when enough nodes are available and
-        with replacement otherwise. Returned shape is ``(n_points, 3)``.
+        Sample without replacement when enough nodes exist, otherwise repeat.
+        The default return is coords (N, 3). Flags append sdf_mm and/or radius_mm
+        to the tuple in that order. Invalid radii remain invalid for loss filtering.
         """
         n_points = int(n_points)
         if n_points <= 0:
@@ -310,7 +264,66 @@ class GraphStore:
         sampled = coords[sample_idx]
         if device is not None:
             sampled = sampled.to(device=device, non_blocking=True)
-        return sampled
+        result = [sampled]
+        if return_sdf:
+            targets = self._load_sdf_targets(int(idx_df), record)[sample_idx]
+            if device is not None:
+                targets = targets.to(device=device, non_blocking=True)
+            result.append(targets)
+        if return_radius:
+            scale = float(
+                self.args.get("graph_supervision", {})
+                .get("radius", {})
+                .get("scale_to_mm", 1.0)
+            )
+            if not np.isfinite(scale) or scale <= 0:
+                raise ValueError(
+                    "graph_supervision.radius.scale_to_mm must be finite and positive"
+                )
+            if record["radius"].shape != (n_available,):
+                raise ValueError("Every graph radius must be a scalar")
+            radius = record["radius"][sample_idx] * scale
+            if device is not None:
+                radius = radius.to(device=device, non_blocking=True)
+            result.append(radius)
+        return tuple(result) if len(result) > 1 else sampled
+
+    def _load_sdf_targets(self, idx_df, record):
+        """Cache trilinear SDF samples, not the full SDF volume, on CPU."""
+        if "sdf_mm" in record:
+            return record["sdf_mm"]
+        import nibabel as nib
+        from scipy.ndimage import map_coordinates
+
+        key = self.args["dataset"].get("sdf_key")
+        row = self._get_row(idx_df)
+        if not key or key not in row or not isinstance(row[key], str) or not row[key]:
+            raise ValueError(
+                "Graph SDF supervision requires dataset.sdf_key and SDF paths in the TSV"
+            )
+        image = nib.load(row[key])
+        reference = nib.load(row[self.affine_reference_key])
+        if image.shape != reference.shape or not np.allclose(
+            image.affine, reference.affine, atol=1e-2
+        ):
+            raise ValueError("Graph SDF and segmentation must share shape and affine")
+        sdf = image.get_fdata(dtype=np.float32)
+        if sdf.ndim != 3 or not np.isfinite(sdf).all():
+            raise ValueError("Graph SDF targets require a finite 3D distance volume")
+        voxel_coords = nib.affines.apply_affine(
+            np.linalg.inv(image.affine), record["pos_world"].numpy()
+        )
+        upper = np.array(sdf.shape) - 1
+        if np.any(voxel_coords < -1e-4) or np.any(voxel_coords > upper + 1e-4):
+            raise ValueError(
+                "Graph nodes lie outside the SDF voxel grid; check graph/NIfTI alignment"
+            )
+        voxel_coords = np.clip(voxel_coords, 0, upper)
+        targets = map_coordinates(
+            sdf, voxel_coords.T, order=1, mode="nearest", prefilter=False
+        )
+        record["sdf_mm"] = torch.from_numpy(targets.astype(np.float32, copy=False))
+        return record["sdf_mm"]
 
     def summary(self, idx_df: int) -> Dict[str, Any]:
         """Small diagnostic summary useful before starting training."""

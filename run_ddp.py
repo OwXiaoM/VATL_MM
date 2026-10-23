@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-DDP launcher for CINeMA / VATL_MM atlas training.
+"""Distributed training entry point with SLURM/torchrun support.
 
-Main features:
-1. Works with torchrun / torch.distributed.run on SLURM.
-2. Broadcasts output_dir from rank 0 to all ranks.
-3. Supports command-line MoE overrides:
-   --num_experts, --moe_k, --use_moe
-4. Supports generic nested overrides using "__", e.g.:
-   --inr_decoder__hidden_size 512
-   --optimizer__lr_inr 1e-4
-5. Saves config_final.yaml after all command-line overrides.
+Nested command-line overrides use double underscores, for example
+--optimizer__lr_inr 1e-4. Rank zero saves the resolved configuration.
 """
 
 import os
 
-# Set thread limits BEFORE importing torch / numpy-heavy libraries.
+# Set thread limits before importing numerical libraries.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -68,14 +60,7 @@ def str2bool(value):
 
 
 def auto_cast_value(value):
-    """
-    Cast unknown CLI override values to bool/int/float when possible.
-
-    This helps generic overrides such as:
-      --optimizer__lr_inr 1e-4
-      --logging false
-      --batch_size 16
-    """
+    """Convert command-line values to booleans or numbers when possible."""
     if value is None:
         return value
 
@@ -104,13 +89,7 @@ def auto_cast_value(value):
 
 
 def set_nested(config, key_path, value):
-    """
-    Set nested config value using "__" separated key path.
-
-    Example:
-      key_path = "inr_decoder__num_experts"
-      config["inr_decoder"]["num_experts"] = value
-    """
+    """Set a nested configuration value using a double-underscore key path."""
     keys = key_path.split("__")
     current = config
 
@@ -158,16 +137,11 @@ def override_args(config_args, cmd_args):
 
     return config_args
 
+
 def sync_out_dim_with_dataset(args, rank=None):
-    """
-    Complete inr_decoder.out_dim using dataset.class_weights.
+    """Set image/tissue output dimensions from dataset class weights.
 
-    Example:
-        config_atlas.yaml: out_dim: [1]
-        config_data.yaml: class_weights length = 11
-
-    Then:
-        args["inr_decoder"]["out_dim"] becomes [1, 11]
+    sdf_dim independently controls the trailing linear SDF channel.
     """
     dataset = args["dataset"]
     inr_decoder = args["inr_decoder"]
@@ -205,18 +179,16 @@ def sync_out_dim_with_dataset(args, rank=None):
             )
         out_dim[-1] = n_seg_channels
 
+    sdf_dim = inr_decoder.get("sdf_dim", 0)
+    if sdf_dim not in (0, 1):
+        raise ValueError("inr_decoder.sdf_dim must be 0 or 1")
+    inr_decoder["sdf_dim"] = sdf_dim
     inr_decoder["out_dim"] = out_dim
     return args
 
-def apply_moe_overrides(args, cmd_args):
-    """
-    Shortcut overrides for MoE config.
 
-    These directly modify:
-      args["inr_decoder"]["num_experts"]
-      args["inr_decoder"]["moe_k"]
-      args["inr_decoder"]["use_moe"]
-    """
+def apply_moe_overrides(args, cmd_args):
+    """Apply MoE shortcut arguments and validate expert/routing counts."""
     if "inr_decoder" not in args:
         args["inr_decoder"] = {}
 
@@ -229,12 +201,13 @@ def apply_moe_overrides(args, cmd_args):
     if cmd_args.get("use_moe") is not None:
         args["inr_decoder"]["use_moe"] = str2bool(cmd_args["use_moe"])
 
-    # Safety check
     if args["inr_decoder"].get("use_moe", False):
         e = int(args["inr_decoder"].get("num_experts", 1))
         k = int(args["inr_decoder"].get("moe_k", 1))
         if k > e:
-            raise ValueError(f"Invalid MoE config: moe_k={k} cannot be larger than num_experts={e}.")
+            raise ValueError(
+                f"Invalid MoE config: moe_k={k} cannot be larger than num_experts={e}."
+            )
         if k < 1:
             raise ValueError(f"Invalid MoE config: moe_k={k} must be >= 1.")
         if e < 1:
@@ -273,11 +246,9 @@ def initial_setup(cmd_args):
 
     args_data = {"dataset": config_data_all[config_data_name]}
 
-    # Merge dataset config and atlas config.
     args = {**args_data, **args_atlas}
     args["config_data"] = config_data_name
 
-    # Load subject IDs.
     subject_ids_path = args["dataset"]["subject_ids"]
     subject_ids_yaml = load_yaml(subject_ids_path)
     dataset_name = args["dataset"]["dataset_name"]
@@ -289,11 +260,9 @@ def initial_setup(cmd_args):
             f"dataset_name={dataset_name} not found in subject_ids file: {subject_ids_path}"
         )
 
-    # Apply command-line overrides.
     args = override_args(args, cmd_args)
     args = apply_moe_overrides(args, cmd_args)
     args = sync_out_dim_with_dataset(args, rank=rank)
-    # Rank 0 creates output dir.
     run_dir = args["output_dir"]
 
     if rank == 0:
@@ -304,7 +273,7 @@ def initial_setup(cmd_args):
         os.makedirs(run_dir, exist_ok=True)
         print(f"Output directory created: {run_dir}", flush=True)
 
-    # Broadcast output dir to all ranks.
+    # All ranks must share the output directory created by rank zero.
     if dist.is_available() and dist.is_initialized():
         obj_container = [run_dir]
         dist.broadcast_object_list(obj_container, src=0)
@@ -312,17 +281,15 @@ def initial_setup(cmd_args):
 
     args["output_dir"] = run_dir
 
-    # Rank 0 saves configs and initializes wandb.
     if rank == 0:
         os.makedirs(args["output_dir"], exist_ok=True)
 
-        # Save original selected dataset block for readability.
         save_yaml(args_data, os.path.join(args["output_dir"], "config_data.yaml"))
 
-        # Save original atlas config before overrides.
-        save_yaml(args_atlas, os.path.join(args["output_dir"], "config_atlas_original.yaml"))
+        save_yaml(
+            args_atlas, os.path.join(args["output_dir"], "config_atlas_original.yaml")
+        )
 
-        # Save final effective config after all overrides.
         save_yaml(args, os.path.join(args["output_dir"], "config_final.yaml"))
 
         moe_cfg = args.get("inr_decoder", {})
@@ -349,28 +316,34 @@ def initial_setup(cmd_args):
 def parse_cmd_args():
     parser = argparse.ArgumentParser(description="CINeMA Atlas Builder DDP")
 
-    # Common args
-    parser.add_argument("--config_data", type=str, default=None, help="Dataset config key in configs/config_data.yaml")
+    parser.add_argument(
+        "--config_data",
+        type=str,
+        default=None,
+        help="Dataset config key in configs/config_data.yaml",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
 
-    # torchrun compatibility:
-    # torchrun usually provides LOCAL_RANK by env, but older launchers may pass args.
-    parser.add_argument("--local-rank", "--local_rank", dest="local_rank", type=int, default=None)
+    parser.add_argument(
+        "--local-rank", "--local_rank", dest="local_rank", type=int, default=None
+    )
 
-    # MoE shortcuts
-    parser.add_argument("--num_experts", type=int, default=None, help="Override inr_decoder.num_experts")
-    parser.add_argument("--moe_k", type=int, default=None, help="Override inr_decoder.moe_k")
-    parser.add_argument("--use_moe", type=str, default=None, help="Override inr_decoder.use_moe: True/False")
+    parser.add_argument(
+        "--num_experts", type=int, default=None, help="Override inr_decoder.num_experts"
+    )
+    parser.add_argument(
+        "--moe_k", type=int, default=None, help="Override inr_decoder.moe_k"
+    )
+    parser.add_argument(
+        "--use_moe",
+        type=str,
+        default=None,
+        help="Override inr_decoder.use_moe: True/False",
+    )
 
-    # Parse known args and keep unknown args for generic override.
     args, unknown = parser.parse_known_args()
     cmd_args = {k: v for k, v in vars(args).items() if v is not None}
 
-    # Generic nested overrides:
-    # Example:
-    #   --inr_decoder__hidden_size 512
-    #   --optimizer__lr_inr 1e-4
-    #   --batch_size 16
     i = 0
     while i < len(unknown):
         item = unknown[i]
@@ -381,7 +354,6 @@ def parse_cmd_args():
 
         key = item[2:]
 
-        # Boolean flag style: --logging
         if i + 1 >= len(unknown) or unknown[i + 1].startswith("--"):
             cmd_args[key] = True
             i += 1
@@ -447,8 +419,13 @@ def main():
         sys.stdout = Logger(log_file)
         sys.stderr = sys.stdout
 
-        print(f"Logging initialized. All outputs will be saved to {log_file}", flush=True)
-        print(f"DDP Enabled: {args['is_distributed']}. World Size: {world_size}", flush=True)
+        print(
+            f"Logging initialized. All outputs will be saved to {log_file}", flush=True
+        )
+        print(
+            f"DDP Enabled: {args['is_distributed']}. World Size: {world_size}",
+            flush=True,
+        )
         print(f"Device: {device}", flush=True)
 
         moe_cfg = args.get("inr_decoder", {})
