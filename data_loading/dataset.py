@@ -47,6 +47,8 @@ class Data(Dataset):
             if self.use_cache:
                 self.cache[idx] = modalities
 
+        if self.split == "train" and self.args.get("task_specific_sampling", {}).get("enabled", False):
+            return self.task_specific_item(modalities, idx)
         coords, values = self.load_coords_and_values(modalities)
 
         coords = torch.tensor(coords, dtype=torch.float32)
@@ -62,6 +64,10 @@ class Data(Dataset):
         return coords, values, conditions, idx_df
 
     def collate_fn(self, batch, shuffle=True):
+        if isinstance(batch[0], dict):
+            return {"image": self.collate_fn([b["image"] for b in batch], shuffle),
+                    "sdf": self.collate_sdf([b["sdf"] for b in batch], shuffle),
+                    "sampling": [b["sampling"] for b in batch]}
         coords = torch.concat([b[0] for b in batch], dim=0)
         values = torch.concat([b[1] for b in batch], dim=0)
         conditions = torch.concat([b[2] for b in batch], dim=0)
@@ -73,6 +79,15 @@ class Data(Dataset):
             conditions = conditions[perm]
             idx_df = idx_df[perm]
         return coords, values, conditions, idx_df
+
+    def collate_sdf(self, batch, shuffle):
+        arrays = self.collate_fn(batch, shuffle=False)
+        if shuffle:
+            # Separate RNG: adding the SDF shuffle must not perturb image/graph RNG.
+            generator = torch.Generator().manual_seed(torch.initial_seed())
+            perm = torch.randperm(len(arrays[0]), generator=generator)
+            arrays = tuple(x[perm] for x in arrays)
+        return arrays
 
     def load_modalities(self, row_dict):
         modalities = {}
@@ -198,24 +213,34 @@ class Data(Dataset):
             selected = np.concatenate(samples)
         return np.column_stack(np.unravel_index(selected, sdf.shape))
 
-    def load_coords_and_values(self, modalities, normalize=True):
+    def load_coords_and_values(self, modalities, normalize=True, prepared=None, original_count=None):
         """
         Return aligned coordinates and targets with a fixed per-subject count.
 
         SDF training uses a crop-aware mixture of vessel, surface, tissue, and
         background voxels. Other modes retain foreground/background sampling.
         """
-        modalities_data = self.augment_modalities(modalities)
+        modalities_data = self.augment_modalities(modalities) if prepared is None else prepared
         mra_data = modalities_data[self.modality_keys[0]]
         seg_data = modalities_data[self.modality_keys[-1]]
         affine = modalities[self.modality_keys[-1]].affine
         img_shape = mra_data.shape
 
         # Keep a fixed sample count per subject for DDP batching.
-        FINAL_TARGET_POINTS = 500000
-
+        sampling = self.args["dataset"].get("sdf_sampling", {})
+        FINAL_TARGET_POINTS = (
+            sampling.get("num_points", 500000)
+            if self.sdf_key and self.split == "train" else 500000
+        )
+        if original_count is not None:
+            FINAL_TARGET_POINTS = original_count
+        if (isinstance(FINAL_TARGET_POINTS, bool)
+                or not isinstance(FINAL_TARGET_POINTS, (int, np.integer))
+                or FINAL_TARGET_POINTS <= 0):
+            raise ValueError("sdf_sampling.num_points must be a positive integer")
         use_sdf_sampling = (
-            bool(getattr(self, "sdf_key", None)) and self.split == "train"
+            bool(self.sdf_key) and self.split == "train"
+            and sampling.get("enabled", True) and original_count is None
         )
         if use_sdf_sampling:
             sampling = self.args["dataset"].get("sdf_sampling", {})
@@ -311,6 +336,35 @@ class Data(Dataset):
         values = values[perm]
 
         return coords, values
+
+    def task_specific_item(self, modalities, idx):
+        from data_loading.task_sampling import sample_vessel, sampling_stats
+        cfg = self.args["task_specific_sampling"]
+        if not self.sdf_key or self.args["inr_decoder"].get("sdf_dim") != 1:
+            raise ValueError("Task-specific sampling requires a vessel SDF target/head")
+        if cfg["image"].get("strategy", "original") != "original" or cfg["sdf"].get("strategy", "vessel_aware") != "vessel_aware":
+            raise ValueError("Unsupported task-specific sampling strategy")
+        # One augmentation shared by both branches; image RNG and legacy sampler unchanged.
+        arrays = self.augment_modalities(modalities)
+        coords, values = self.load_coords_and_values(
+            modalities, prepared=arrays, original_count=cfg["image"]["num_points"])
+        affine = modalities[self.modality_keys[-1]].affine
+        state = np.random.get_state()
+        rng = np.random.default_rng(np.random.SeedSequence([int(state[1][0]), int(state[2]), int(idx)]))
+        indices, stats = sample_vessel(arrays[self.sdf_key], affine, self.world_bbox, cfg["sdf"], rng)
+        center = nib.affines.apply_affine(affine, np.array(arrays[self.sdf_key].shape) / 2.)
+        sdf_coords = (nib.affines.apply_affine(affine, indices) - center) / (self.world_bbox / 2.)
+        sdf_values = arrays[self.sdf_key][tuple(indices.T)][:, None]
+        condition = self.load_conditions(self.df.iloc[idx].to_dict())
+        def pack(c, v):
+            n = len(c)
+            return (torch.as_tensor(c, dtype=torch.float32), torch.as_tensor(v, dtype=torch.float32),
+                    condition[None].expand(n, -1), torch.full((n, 1), idx, dtype=torch.int32))
+        image_stats = sampling_stats(coords)
+        labels, counts = np.unique(values[:, len(self.modality_keys)-1], return_counts=True)
+        image_stats["labels"] = {str(int(k)): int(v) for k, v in zip(labels, counts)}
+        return {"image": pack(coords, values), "sdf": pack(sdf_coords, sdf_values),
+                "sampling": {"subject": int(idx), "image": image_stats, "sdf": stats}}
 
     def augment_modalities(self, modalities):
         if self.data_augmentation:

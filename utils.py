@@ -94,6 +94,13 @@ class Criterion(nn.Module):
         )
         self.criterion_seg = nn.CrossEntropyLoss(weight=self.ce_weights)
 
+    def voxel_sdf_loss(self, output, sdf_mm):
+        if not torch.isfinite(sdf_mm).all():
+            raise ValueError("SDF targets contain non-finite distances")
+        target = sdf_mm.clamp(-self.sdf_trunc_mm, self.sdf_trunc_mm) / self.sdf_trunc_mm
+        raw = F.l1_loss(output[..., self.seg_end], target)
+        return raw, self.sdf_weight * raw
+
     def forward(
         self,
         output,
@@ -103,6 +110,7 @@ class Criterion(nn.Module):
         sr_weight=1.0,
         seg_weight=1.0,
         sdf_weight=None,
+        apply_sdf=True,
     ):
         # Targets contain image intensities, one tissue label, then optional SDF in mm.
         expected_targets = self.sr_dims + 1 + int(self.sdf_enabled)
@@ -134,7 +142,7 @@ class Criterion(nn.Module):
             )
 
         sdf_weight = self.sdf_weight if sdf_weight is None else sdf_weight
-        if self.sdf_enabled and sdf_weight > 0:
+        if self.sdf_enabled and apply_sdf:
             sdf_mm = target[..., self.sr_dims + 1]
             if not torch.isfinite(sdf_mm).all():
                 raise ValueError("SDF targets contain non-finite distances")
@@ -155,6 +163,11 @@ class Criterion(nn.Module):
         if moe_loss is not None and self.moe_weight > 0:
             loss["moe"] = self.moe_weight * moe_loss
 
+        loss["sr_raw"] = loss["sr"] / sr_weight if sr_weight else zero
+        loss["seg_raw"] = loss["seg"]
+        loss["seg_weighted"] = seg_weight * loss["seg"]
+        loss["tf_weighted"] = self.tf_weight * loss["tf"]
+        loss["moe_raw"] = moe_loss if moe_loss is not None else zero
         loss["total"] = (
             loss["sr"]
             + seg_weight * loss["seg"]

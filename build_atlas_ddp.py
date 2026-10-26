@@ -19,7 +19,6 @@ from data_loading.dataset import Data
 from utils import *
 import torch.nn.functional as F
 from data_loading.graph_store import GraphStore
-from subject_to_atlas import export_subject_to_atlas
 
 
 class AtlasBuilderDDP:
@@ -74,6 +73,9 @@ class AtlasBuilderDDP:
 
             self._update_scheduler(split="train")
 
+        if total_epochs > 0:
+            self.synchronize_latents(split="train")
+            self.save_state(total_epochs - 1)
         return np.mean(loss_hist_epochs)
 
     def train_epoch(self, epoch, split):
@@ -102,12 +104,18 @@ class AtlasBuilderDDP:
         # Adapt validation/test latents without tissue or SDF supervision.
         seg_weight = self.args["optimizer"]["seg_weight"] if split == "train" else 0.0
 
+        task_batch = isinstance(batch, dict)
+        sampling_records = batch["sampling"] if task_batch else None
+        sdf_batch = to_device(batch["sdf"], self.device) if task_batch else None
         coords_batch, values_batch, conditions_batch, idx_df_batch = to_device(
-            batch, self.device
+            batch["image"] if task_batch else batch, self.device
         )
+        if task_batch and split != "train":
+            raise ValueError("Task-specific batches are training-only")
         sample_iterator = range(0, idx_df_batch.shape[0], n_smpls)
 
         for i, smpls in enumerate(sample_iterator):
+            step_started = time.perf_counter()
             self.optimizers[split].zero_grad()
 
             coords = coords_batch[smpls : smpls + n_smpls]
@@ -121,6 +129,18 @@ class AtlasBuilderDDP:
                 conditions = self.conditions_val[idx_df]
 
             n_voxel = coords.shape[0]
+            n_sdf = 0
+            sdf_end = 0
+            if task_batch:
+                # Partition the independently shuffled SDF batch proportionally across
+                # the existing image microsteps; never add optimizer steps.
+                start = smpls * len(sdf_batch[0]) // len(coords_batch)
+                sdf_end = min(smpls + n_smpls, len(coords_batch)) * len(sdf_batch[0]) // len(coords_batch)
+                if sdf_end == start:
+                    raise ValueError("SDF budget too small for the image microstep count")
+                scoords, starget, sconditions, sids = [x[start:sdf_end] for x in sdf_batch]
+                sids = sids.reshape(-1).long()
+                n_sdf = len(scoords)
 
             graph_batch_active = False
             graph_coords = None
@@ -202,14 +222,20 @@ class AtlasBuilderDDP:
                         graph_radius_target = torch.cat(graph_radius_list, dim=0)
                     graph_batch_active = True
 
+            if task_batch:
+                coords = torch.cat([coords, scoords], dim=0)
+                conditions = torch.cat([conditions, sconditions], dim=0)
+                idx_df_forward = torch.cat([idx_df, sids], dim=0)
+            else:
+                idx_df_forward = idx_df
             if graph_batch_active:
                 coords_forward = torch.cat([coords, graph_coords], dim=0)
                 conditions_forward = torch.cat([conditions, graph_conditions], dim=0)
-                idx_forward = torch.cat([idx_df, graph_idx_df], dim=0)
+                idx_forward = torch.cat([idx_df_forward, graph_idx_df], dim=0)
             else:
                 coords_forward = coords
                 conditions_forward = conditions
-                idx_forward = idx_df
+                idx_forward = idx_df_forward
 
             with torch.autocast(device_type="cuda", enabled=self.args["amp"]):
                 output_forward, aux_loss = self.inr_decoder[split](
@@ -228,13 +254,20 @@ class AtlasBuilderDDP:
                     self.transformations[split][idx_df],
                     moe_loss=aux_loss,
                     seg_weight=seg_weight,
-                    sdf_weight=None if split == "train" else 0.0,
+                    sdf_weight=None if split == "train" and not task_batch else 0.0,
+                    apply_sdf=not task_batch,
                 )
+
+                if task_batch:
+                    sdf_loss = self.loss_criterion.voxel_sdf_loss(
+                        output_forward[n_voxel:n_voxel+n_sdf], starget[:, 0])
+                    loss["sdf_raw"], loss["sdf"] = sdf_loss
+                    loss["total"] = loss["total"] + loss["sdf"]
 
                 if graph_batch_active:
                     graph_loss = graph_supervision_loss(
                         self.args,
-                        output_forward[n_voxel:],
+                        output_forward[n_voxel+n_sdf:],
                         graph_sdf_target,
                         graph_radius_target,
                     )
@@ -244,6 +277,25 @@ class AtlasBuilderDDP:
                     loss["graph"] = output_forward.new_zeros(())
                     loss["graph_raw"] = output_forward.new_zeros(())
 
+            every = int(self.args.get("loss_diagnostics", {}).get("every", 0))
+            self.loss_diagnostic_step = getattr(self, "loss_diagnostic_step", 0) + 1
+            if every > 0 and self.loss_diagnostic_step % every == 0 and self.rank == 0:
+                import json
+                record = {"epoch": epoch, "split": split,
+                          "step": self.loss_diagnostic_step, "rank": self.rank}
+                if task_batch:
+                    record["sampling"] = sampling_records
+                    record["points_image"] = n_voxel
+                    record["points_sdf"] = n_sdf
+                    record["points_graph"] = len(graph_coords) if graph_batch_active else 0
+                    record["cuda_peak_allocated_bytes"] = torch.cuda.max_memory_allocated(self.device) if torch.device(self.device).type == "cuda" else 0
+                record.update({k: float(v.detach()) if torch.is_tensor(v) else float(v)
+                               for k, v in loss.items()})
+                path = os.path.join(self.args["output_dir"], "loss_components.jsonl")
+                with open(path, "a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(record) + "\n")
+                print("[Loss components]", json.dumps(record))
+
             if self.args["amp"]:
                 self.grad_scalers[split].scale(loss["total"]).backward()
                 self.grad_scalers[split].step(self.optimizers[split])
@@ -252,6 +304,16 @@ class AtlasBuilderDDP:
                 loss["total"].backward()
                 self.optimizers[split].step()
 
+            if task_batch and every > 0 and self.loss_diagnostic_step % every == 0 and self.rank == 0:
+                import json
+                if torch.device(self.device).type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                perf = {"epoch": epoch, "step": self.loss_diagnostic_step,
+                        "step_seconds": time.perf_counter() - step_started,
+                        "points_image": n_voxel, "points_sdf": n_sdf,
+                        "cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated(self.device) if torch.device(self.device).type == "cuda" else 0}
+                with open(os.path.join(self.args["output_dir"], "task_sampling_cost.jsonl"), "a") as stream:
+                    stream.write(json.dumps(perf) + "\n")
             loss_hist_samples.append(loss["total"].item())
 
             if (i % 100 == 0 or i == (len(sample_iterator) - 1)) and self.rank == 0:
@@ -471,13 +533,13 @@ class AtlasBuilderDDP:
         self.dataloaders[split] = DataLoader(
             self.datasets[split],
             batch_size=self.args["batch_size"],
-            num_workers=8,
+            num_workers=self.args["num_workers"],
             shuffle=shuffle,
             sampler=sampler,
             collate_fn=self.datasets[split].collate_fn,
             pin_memory=True,
-            persistent_workers=True,
-            prefetch_factor=2,
+            persistent_workers=self.args["num_workers"] > 0,
+            prefetch_factor=2 if self.args["num_workers"] > 0 else None,
         )
 
         if self.rank == 0:
@@ -538,6 +600,8 @@ class AtlasBuilderDDP:
         import nibabel as nib
 
         metrics = []
+        if not (self.args["compute_metrics"] or self.args["save_imgs"][split]):
+            return metrics
         model = self.inr_decoder[split]
         if isinstance(model, DDP):
             model = model.module
@@ -589,6 +653,7 @@ class AtlasBuilderDDP:
 
             if (self.args.get("subject_to_atlas", {}).get("enabled", False)
                     and self.args["save_imgs"][split]):
+                from subject_to_atlas import export_subject_to_atlas
                 export_subject_to_atlas(
                     self.args, df_row_dict, transformations, epoch, split
                 )

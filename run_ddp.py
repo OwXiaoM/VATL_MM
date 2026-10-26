@@ -313,7 +313,28 @@ def initial_setup(cmd_args):
     return args
 
 
-def parse_cmd_args():
+def parse_cmd_args(argv=None):
+    # Expand an experiment at its CLI position: later user flags still win,
+    # while experiment settings override defaults emitted earlier by common.sh.
+    argv = list(sys.argv[1:] if argv is None else argv)
+    expanded = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        expanded.append(token)
+        if token == "--experiment_config":
+            if i + 1 >= len(argv):
+                raise ValueError("--experiment_config requires a YAML path")
+            i += 1
+            expanded.append(argv[i])
+            overrides = load_yaml(argv[i])
+            if not isinstance(overrides, dict):
+                raise ValueError("Experiment config must contain flat CLI overrides")
+            for key, value in overrides.items():
+                if isinstance(value, (dict, list)) or value is None or key == "experiment_config":
+                    raise ValueError("Use scalar, double-underscore experiment overrides")
+                expanded.extend(["--" + key, str(value)])
+        i += 1
     parser = argparse.ArgumentParser(description="CINeMA Atlas Builder DDP")
 
     parser.add_argument(
@@ -341,7 +362,7 @@ def parse_cmd_args():
         help="Override inr_decoder.use_moe: True/False",
     )
 
-    args, unknown = parser.parse_known_args()
+    args, unknown = parser.parse_known_args(expanded)
     cmd_args = {k: v for k, v in vars(args).items() if v is not None}
 
     i = 0

@@ -2,7 +2,7 @@ root_dir: '' # if empty, use current working directory
 
 # --------- Logging Parameters ---------
 logging: False # if True, log to wandb
-output_dir: /leonardo_scratch/large/userexternal/xzhang01/Cinema_output # directory to save the model, reconstruction images, atlases, etc.
+output_dir: /medias/medical/caravel/zhangx/training_outputs # directory to save the model, reconstruction images, atlases, etc.
 wandb_entity: # wandb entity
 project_name: CINeMA # wandb project name
 config_data: dhcp_neo_preterm_mm # name of the dataset to use (specified in config_data.yaml)
@@ -31,7 +31,7 @@ test_time_adaptation:
   enabled: True # fit held-out subjects using epochs.val; False skips held-out inference
 compute_metrics: False # calculate reconstruction metrics against subject references
 subject_to_atlas:
-  enabled: True # reverse fitted transform: original images + masks onto the atlas grid
+  enabled: False # requires the optional subject_to_atlas.py exporter (not included)
   mask_keys: [] # extra dataset columns with label masks (nearest neighbor)
 # Reverse export also requires save_imgs.<split>: True. Metrics can run without saving.
 # These metrics compare native-space reconstruction with subject references;

@@ -79,6 +79,7 @@ class INR_Decoder(nn.Module):
         step_size=100000,
         return_sdf=False,
         include_sdf=False,
+        return_diagnostics=False,
     ):
         """
         Inference of the INR decoder for volume generation.
@@ -127,7 +128,27 @@ class INR_Decoder(nn.Module):
 
         modalities_rec = torch.cat((imgs, seg_hard, seg_soft), dim=-1)
 
-        if self.args["mask_reconstruction"]:
+        diagnostics = None
+        if return_diagnostics:
+            if return_sdf:
+                raise ValueError("Use either return_sdf or return_diagnostics")
+            # One decoder pass: both variants use identical predictions and conditions.
+            mask = self.connected_components(seg_hard)
+            diagnostics = {
+                "raw_intensities": raw_imgs.reshape(list(img_shape) + [self.sr_dims]),
+                "unmasked_intensities": imgs,
+                "masked_intensities": imgs * mask,
+                "hard_segmentation": seg_hard,
+                "reconstruction_mask": mask,
+                "tissue_probabilities": seg_soft,
+            }
+            if self.sdf_dim:
+                diagnostics["sdf_mm"] = output[..., self.seg_end:].reshape(
+                    list(img_shape) + [self.sdf_dim]
+                ) * float(self.args["optimizer"].get("sdf_trunc_mm", 5.0))
+            if self.args["mask_reconstruction"]:
+                modalities_rec = modalities_rec * mask
+        elif self.args["mask_reconstruction"]:
             modalities_rec = self.mask_reconstruction(modalities_rec, seg_hard)
         if return_sdf or include_sdf:
             sdf = output[..., self.seg_end :].reshape(list(img_shape) + [self.sdf_dim])
@@ -139,6 +160,8 @@ class INR_Decoder(nn.Module):
             sdf_mm = sdf * tau_mm
             vessel_mask = (sdf_mm < 0).to(sdf_mm.dtype)
             modalities_rec = torch.cat((modalities_rec, sdf_mm, vessel_mask), dim=-1)
+        if return_diagnostics:
+            return modalities_rec, diagnostics
         if return_sdf:
             return modalities_rec, sdf
         return modalities_rec
@@ -162,7 +185,7 @@ class INR_Decoder(nn.Module):
         coords = coords[:, None, None, None, :]
         latents = F.grid_sample(
             latents, coords, mode="bilinear", align_corners=True, padding_mode="border"
-        ).squeeze()
+        ).reshape(coords.shape[0], -1)
         if condition_vecs is not None:
             latents = torch.concat((latents, condition_vecs), dim=-1)
         return latents
