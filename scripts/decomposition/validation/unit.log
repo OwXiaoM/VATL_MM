@@ -1,0 +1,17 @@
+test_ablation_configs (test_sdf_decomposition.DecompositionTests.test_ablation_configs) ... ok
+test_checkpoint_roundtrip (test_sdf_decomposition.DecompositionTests.test_checkpoint_roundtrip) ... ok
+test_gradients_and_losses (test_sdf_decomposition.DecompositionTests.test_gradients_and_losses) ... ok
+test_metrics (test_sdf_decomposition.DecompositionTests.test_metrics) ... ok
+test_old_config_and_initialization (test_sdf_decomposition.DecompositionTests.test_old_config_and_initialization) ... ok
+test_one_subject_thin_vessel_overfit (test_sdf_decomposition.DecompositionTests.test_one_subject_thin_vessel_overfit) ... Synthetic thin-cylinder MSE: 0.418297 -> 0.000517
+ok
+test_physical_eikonal_linear_field (test_sdf_decomposition.DecompositionTests.test_physical_eikonal_linear_field) ... ok
+test_physical_rigid_inverse (test_sdf_decomposition.DecompositionTests.test_physical_rigid_inverse) ... ok
+test_shapes_identity_zero_and_sign (test_sdf_decomposition.DecompositionTests.test_shapes_identity_zero_and_sign) ... ok
+test_stages (test_sdf_decomposition.DecompositionTests.test_stages) ... ok
+test_unseen_adaptation_keeps_population_fixed (test_sdf_decomposition.DecompositionTests.test_unseen_adaptation_keeps_population_fixed) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 6.028s
+
+OK

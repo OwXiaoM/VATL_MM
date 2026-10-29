@@ -7,7 +7,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     exit 1
 fi
 
-SDF_REPO="${SDF_REPO:-/users/zhangx/VATL_MM}"
+SDF_REPO="${SDF_REPO:-/lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM}"
 SDF_NPROC="${SDF_NPROC:-4}"
 SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
 SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-off}"
@@ -36,7 +36,7 @@ SDF_EXPERIMENT="n${SDF_NUM_EXPERTS}k2/graph_${SDF_GRAPH_MODE}"
 if [[ "$SDF_RADIUS" == True ]]; then
     SDF_EXPERIMENT="${SDF_EXPERIMENT}_radius"
 fi
-SDF_OUTPUT_ROOT="${SDF_OUTPUT_ROOT:-/medias/medical/caravel/zhangx/training_outputs/sdf}"
+SDF_OUTPUT_ROOT="${SDF_OUTPUT_ROOT:-/lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/sdf}"
 
 SDF_COMMAND=(
     srun --ntasks=1 python -m torch.distributed.run
@@ -73,15 +73,12 @@ if [[ "${SDF_DRY_RUN:-0}" == 1 ]]; then
     exit 0
 fi
 
-# The login setup references unset interactive variables and returns a nonzero status.
-set +eu
-source "$HOME/.bashrc1"
-conda activate "${SDF_CONDA_ENV:-torch}"
-activate_status=$?
-set -euo pipefail
-if (( activate_status != 0 )); then
-    echo "Could not activate the training environment" >&2
-    exit "$activate_status"
+# Shared module setup selects H100, or A100 for an already queued A100 job.
+source "$SDF_REPO/scripts/decomposition/environment.sh"
+export SDF_DATA_ROOT="${SDF_DATA_ROOT:-/lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1}"
+if [[ ! -d "$SDF_DATA_ROOT" ]]; then
+    echo "Dataset directory missing: $SDF_DATA_ROOT" >&2
+    exit 1
 fi
 cd "$SDF_REPO"
 

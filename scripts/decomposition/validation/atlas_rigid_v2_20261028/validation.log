@@ -1,0 +1,61 @@
+--------------------------------
+Sampling data for split  val 
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 3, Number of subjects in subject_ids list: 3
+Number of subjects in dataframe after sampling: 3 
+
+Initial number of subjects: 3
+Number of subjects after removing missing modalities: 3
+Initial number of subjects: 3
+Number of subjects after constraints check: 3
+Sampled  2  subjects for split  val 
+
+--------------------------------
+--------------------------------
+Sampling data for split  val 
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 3, Number of subjects in subject_ids list: 3
+Number of subjects in dataframe after sampling: 3 
+
+Initial number of subjects: 3
+Number of subjects after removing missing modalities: 3
+Initial number of subjects: 3
+Number of subjects after constraints check: 3
+Sampled  2  subjects for split  val 
+
+--------------------------------
+--------------------------------
+Sampling data for split  train 
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 3, Number of subjects in subject_ids list: 3
+Number of subjects in dataframe after sampling: 3 
+
+Initial number of subjects: 3
+Number of subjects after removing missing modalities: 3
+Initial number of subjects: 3
+Number of subjects after constraints check: 3
+Sampled  2  subjects for split  train 
+
+--------------------------------
+..[val] Ordered evaluation subjects: ['synthetic']
+[val] Ordered evaluation subjects: ['synthetic']
+[val] Dice_multiclass: {'mean': 0.5, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] MRA_PSNR: {'mean': 10.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] MRA_SSIM: {'mean': 0.2, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] T1_PSNR: {'mean': 20.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] T1_SSIM: {'mean': 0.8, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+.Starting inference for Epoch 7...
+Starting inference for Epoch 7...
+.Saved val/MRA_synthetic_ep=0.nii.gz to /tmp/tmpn_dzj5ke/experiment
+Saved val/MRA_synthetic_ref.nii.gz to /tmp/tmpn_dzj5ke/experiment
+Saved val/T1_synthetic_ep=0.nii.gz to /tmp/tmpn_dzj5ke/experiment
+Saved val/T1_synthetic_ref.nii.gz to /tmp/tmpn_dzj5ke/experiment
+Saved val/Seg_synthetic_ep=0.nii.gz to /tmp/tmpn_dzj5ke/experiment
+Saved val/Seg_synthetic_ref.nii.gz to /tmp/tmpn_dzj5ke/experiment
+Saved val/SDF_synthetic_ep=0.nii.gz to /tmp/tmpn_dzj5ke/experiment
+Saved val/VesselMask_synthetic_ep=0.nii.gz to /tmp/tmpn_dzj5ke/experiment
+.
+----------------------------------------------------------------------
+Ran 5 tests in 0.535s
+
+OK

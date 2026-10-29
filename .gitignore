@@ -1,0 +1,5 @@
+# Generated Python and notebook caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/

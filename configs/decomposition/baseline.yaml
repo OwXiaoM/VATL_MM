@@ -1,0 +1,3 @@
+extends: full.yaml
+decomposition:
+  enabled: false # dispatch to original AtlasBuilderDDP and subject modulation grids

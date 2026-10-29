@@ -1,0 +1,589 @@
+diff --git a/build_atlas.py b/build_atlas.py
+index 6f9037e..7e05d5a 100644
+--- a/build_atlas.py
++++ b/build_atlas.py
+@@ -1,3 +1,4 @@
++from data_paths import relocate_path
+ import wandb as wd
+ import pandas as pd
+ import os
+@@ -812,7 +813,7 @@ class AtlasBuilder:
+     def _init_dataloading(self, tsv_file=None, df_loaded=None, split="train"):
+         shuffle = True if split == "train" else False
+         tsv_file = (
+-            pd.read_csv(self.args["dataset"]["tsv_file"], sep="\t")
++            pd.read_csv(relocate_path(self.args["dataset"]["tsv_file"]), sep="\t")
+             if tsv_file is None
+             else tsv_file
+         )
+diff --git a/build_atlas_ddp.py b/build_atlas_ddp.py
+index cea9d24..4ec2b5a 100644
+--- a/build_atlas_ddp.py
++++ b/build_atlas_ddp.py
+@@ -1,3 +1,4 @@
++from data_paths import relocate_path
+ import wandb as wd
+ import pandas as pd
+ import os
+@@ -510,7 +511,7 @@ class AtlasBuilderDDP:
+ 
+     def _init_dataloading(self, tsv_file=None, df_loaded=None, split="train"):
+         tsv_file = (
+-            pd.read_csv(self.args["dataset"]["tsv_file"], sep="\t")
++            pd.read_csv(relocate_path(self.args["dataset"]["tsv_file"]), sep="\t")
+             if tsv_file is None
+             else tsv_file
+         )
+diff --git a/configs/config_atlas.yaml b/configs/config_atlas.yaml
+index 840608a..cd6f6da 100644
+--- a/configs/config_atlas.yaml
++++ b/configs/config_atlas.yaml
+@@ -2,7 +2,7 @@ root_dir: '' # if empty, use current working directory
+ 
+ # --------- Logging Parameters ---------
+ logging: False # if True, log to wandb
+-output_dir: /medias/medical/caravel/zhangx/training_outputs # directory to save the model, reconstruction images, atlases, etc.
++output_dir: /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs # directory to save the model, reconstruction images, atlases, etc.
+ wandb_entity: # wandb entity
+ project_name: CINeMA # wandb project name
+ config_data: dhcp_neo_preterm_mm # name of the dataset to use (specified in config_data.yaml)
+diff --git a/configs/config_data.yaml b/configs/config_data.yaml
+index f297c07..82b4080 100644
+--- a/configs/config_data.yaml
++++ b/configs/config_data.yaml
+@@ -107,8 +107,8 @@ mra_atlas_non_iop: # dhcp neonates multimodal dataset config
+ 
+ mra_atlas_synthseg_label12: # dhcp neonates multimodal dataset config
+   dataset_name: mra_atlas_synthseg_label12
+-  subject_ids: /medias/medical/data/Atlas_training/v1/subject_ids_label12.yaml
+-  tsv_file: /medias/medical/data/Atlas_training/v1/ixi_metadata_label12.tsv
++  subject_ids: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/subject_ids_label12.yaml
++  tsv_file: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/ixi_metadata_label12.tsv
+   modalities: ['MRA', 'Seg'] # modality names in the tsv file 
+   conditions:  # conditions with number of dimensions possibly used for atlas conditioning
+     scan_age: true   # 将年龄作为图谱生成的“时间轴”条件
+@@ -134,8 +134,8 @@ mra_atlas_synthseg_label12: # dhcp neonates multimodal dataset config
+ 
+ mra_atlas_synthseg_label16: # dhcp neonates multimodal dataset config
+   dataset_name: mra_atlas_synthseg_label16
+-  subject_ids: /medias/medical/data/Atlas_training/v1/subject_ids_label16.yaml
+-  tsv_file: /medias/medical/data/Atlas_training/v1/ixi_metadata_label16.tsv
++  subject_ids: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/subject_ids_label16.yaml
++  tsv_file: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/ixi_metadata_label16.tsv
+   modalities: ['MRA', 'Seg'] # modality names in the tsv file 
+   conditions:  # conditions with number of dimensions possibly used for atlas conditioning
+     scan_age: true   # 将年龄作为图谱生成的“时间轴”条件
+@@ -160,8 +160,8 @@ mra_atlas_synthseg_label16: # dhcp neonates multimodal dataset config
+ 
+ mra_atlas_synthseg_label_t1: # dhcp neonates multimodal dataset config
+   dataset_name: mra_atlas_synthseg_label_t1
+-  subject_ids: /medias/medical/data/Atlas_training/v1/subject_ids_label_t1.yaml
+-  tsv_file: /medias/medical/data/Atlas_training/v1/ixi_metadata_label_t1.tsv
++  subject_ids: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/subject_ids_label_t1.yaml
++  tsv_file: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/ixi_metadata_label_t1.tsv
+   modalities: ['MRA', 'T1', 'Seg'] # modality names in the tsv file 
+   conditions:  # conditions with number of dimensions possibly used for atlas conditioning
+     scan_age: true   # 将年龄作为图谱生成的“时间轴”条件
+@@ -186,8 +186,8 @@ mra_atlas_synthseg_label_t1: # dhcp neonates multimodal dataset config
+ 
+ mra_atlas_synthseg_label_t1_fast: # dhcp neonates multimodal dataset config
+   dataset_name: mra_atlas_synthseg_label_t1_fast
+-  subject_ids: /medias/medical/data/Atlas_training/v1/subject_ids_label_t1_fast.yaml
+-  tsv_file: /medias/medical/data/Atlas_training/v1/ixi_metadata_label_t1_fast.tsv
++  subject_ids: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/subject_ids_label_t1_fast.yaml
++  tsv_file: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/ixi_metadata_label_t1_fast.tsv
+   modalities: ['MRA', 'T1', 'Seg'] # modality names in the tsv file 
+   conditions:  # conditions with number of dimensions possibly used for atlas conditioning
+     scan_age: true   # 将年龄作为图谱生成的“时间轴”条件
+@@ -213,8 +213,8 @@ mra_atlas_synthseg_label_t1_fast: # dhcp neonates multimodal dataset config
+ mra_atlas_synthseg_label_t1_fast_graph:
+   dataset_name: mra_atlas_synthseg_label_t1_fast
+ 
+-  subject_ids: /medias/medical/data/Atlas_training/v1/subject_ids_label_t1_fast.yaml
+-  tsv_file: /medias/medical/data/Atlas_training/v1/ixi_metadata_label_t1_fast_graph.tsv
++  subject_ids: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/subject_ids_label_t1_fast.yaml
++  tsv_file: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/ixi_metadata_label_t1_fast_graph.tsv
+   modalities: ['MRA', 'T1', 'Seg']
+ 
+   conditions:
+@@ -243,8 +243,8 @@ mra_atlas_synthseg_label_t1_fast_graph:
+ mra_atlas_synthseg_label_t1_fast_sdf:
+   dataset_name: mra_atlas_synthseg_label_t1_fast
+ 
+-  subject_ids: /medias/medical/data/Atlas_training/v1/subject_ids_label_t1_fast.yaml
+-  tsv_file: /medias/medical/data/Atlas_training/v1/ixi_metadata_label_t1_fast_sdf.tsv
++  subject_ids: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/subject_ids_label_t1_fast.yaml
++  tsv_file: /lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1/ixi_metadata_label_t1_fast_sdf.tsv
+   modalities: ['MRA', 'T1', 'Seg']
+   sdf_key: SDF # separate float target in physical mm; negative inside vessels
+   sdf_sampling: # training only; validation/test retain the original sampling
+diff --git a/data_loading/dataset.py b/data_loading/dataset.py
+index 0edf7f9..dc3c219 100644
+--- a/data_loading/dataset.py
++++ b/data_loading/dataset.py
+@@ -1,3 +1,4 @@
++from data_paths import relocate_dataframe
+ import os
+ import math
+ import matplotlib.pyplot as plt
+@@ -22,9 +23,9 @@ class Data(Dataset):
+             [self.sdf_key] if self.sdf_key else []
+         )
+         self.world_bbox = np.array(self.args["dataset"]["world_bbox"])
+-        self.tsv_file = tsv_file
++        self.tsv_file = relocate_dataframe(tsv_file)
+         self.df = (
+-            self.filter_dataframe(self.tsv_file) if df_loaded is None else df_loaded
++            self.filter_dataframe(self.tsv_file) if df_loaded is None else relocate_dataframe(df_loaded)
+         )
+ 
+         self.cache = {}
+diff --git a/run.py b/run.py
+index 78662d4..a30cae0 100644
+--- a/run.py
++++ b/run.py
+@@ -1,3 +1,4 @@
++from data_paths import relocate_path
+ import os
+ from datetime import datetime
+ import yaml
+@@ -84,7 +85,7 @@ def initial_setup(cmd_args=None):
+         )
+         args_data = {"dataset": yaml.safe_load(stream)[config_data]}
+     args = {**args_data, **args_atlas}
+-    with open(args["dataset"]["subject_ids"], "r") as stream:
++    with open(relocate_path(args["dataset"]["subject_ids"]), "r") as stream:
+         args["dataset"]["subject_ids"] = yaml.safe_load(stream)[
+             args["dataset"]["dataset_name"]
+         ]["subject_ids"]
+diff --git a/run_ddp.py b/run_ddp.py
+index db54b6c..868defd 100644
+--- a/run_ddp.py
++++ b/run_ddp.py
+@@ -8,6 +8,7 @@ Nested command-line overrides use double underscores, for example
+ """
+ 
+ import os
++from data_paths import relocate_path
+ 
+ # Set thread limits before importing numerical libraries.
+ os.environ.setdefault("OMP_NUM_THREADS", "1")
+@@ -249,7 +250,7 @@ def initial_setup(cmd_args):
+     args = {**args_data, **args_atlas}
+     args["config_data"] = config_data_name
+ 
+-    subject_ids_path = args["dataset"]["subject_ids"]
++    subject_ids_path = relocate_path(args["dataset"]["subject_ids"])
+     subject_ids_yaml = load_yaml(subject_ids_path)
+     dataset_name = args["dataset"]["dataset_name"]
+ 
+diff --git a/training_script/README.md b/training_script/README.md
+index 9dabf3f..48fb307 100644
+--- a/training_script/README.md
++++ b/training_script/README.md
+@@ -1,3 +1,7 @@
++Jean Zay setup and validation: [scripts/jean_zay/README.md](../scripts/jean_zay/README.md).
++
++The notes below describe the original machine and include historical paths.
++
+ # SDF training on this cluster
+ 
+ Run from `/users/zhangx/VATL_MM`. All ten training presets request one node,
+diff --git a/training_script/ablations/A.sh b/training_script/ablations/A.sh
+index 7f98a09..3b4d3bc 100644
+--- a/training_script/ablations/A.sh
++++ b/training_script/ablations/A.sh
+@@ -1,5 +1,7 @@
+ #!/bin/bash
+-#SBATCH -p l40s
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
+ #SBATCH --time=6:00:00
+ #SBATCH --job-name=sdf_ablation_A
+ #SBATCH --output=sdf_ablation_A_%j.log
+@@ -16,6 +18,6 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh \
+-    --experiment_config /users/zhangx/VATL_MM/configs/ablations/A.yaml \
+-    --output_dir /medias/medical/caravel/zhangx/training_outputs/ablations/A "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh \
++    --experiment_config /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/configs/ablations/A.yaml \
++    --output_dir /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/ablations/A "$@"
+diff --git a/training_script/ablations/B.sh b/training_script/ablations/B.sh
+index c09eb4d..930a866 100644
+--- a/training_script/ablations/B.sh
++++ b/training_script/ablations/B.sh
+@@ -1,5 +1,7 @@
+ #!/bin/bash
+-#SBATCH -p l40s
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
+ #SBATCH --time=6:00:00
+ #SBATCH --job-name=sdf_ablation_B
+ #SBATCH --output=sdf_ablation_B_%j.log
+@@ -16,6 +18,6 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh \
+-    --experiment_config /users/zhangx/VATL_MM/configs/ablations/B.yaml \
+-    --output_dir /medias/medical/caravel/zhangx/training_outputs/ablations/B "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh \
++    --experiment_config /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/configs/ablations/B.yaml \
++    --output_dir /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/ablations/B "$@"
+diff --git a/training_script/ablations/C.sh b/training_script/ablations/C.sh
+index a8c0f19..dee9464 100644
+--- a/training_script/ablations/C.sh
++++ b/training_script/ablations/C.sh
+@@ -1,5 +1,7 @@
+ #!/bin/bash
+-#SBATCH -p l40s
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
+ #SBATCH --time=6:00:00
+ #SBATCH --job-name=sdf_ablation_C
+ #SBATCH --output=sdf_ablation_C_%j.log
+@@ -16,6 +18,6 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh \
+-    --experiment_config /users/zhangx/VATL_MM/configs/ablations/C.yaml \
+-    --output_dir /medias/medical/caravel/zhangx/training_outputs/ablations/C "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh \
++    --experiment_config /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/configs/ablations/C.yaml \
++    --output_dir /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/ablations/C "$@"
+diff --git a/training_script/ablations/D.sh b/training_script/ablations/D.sh
+index 81deb06..811e4f3 100644
+--- a/training_script/ablations/D.sh
++++ b/training_script/ablations/D.sh
+@@ -1,5 +1,7 @@
+ #!/bin/bash
+-#SBATCH -p l40s
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
+ #SBATCH --time=6:00:00
+ #SBATCH --job-name=sdf_ablation_D
+ #SBATCH --output=sdf_ablation_D_%j.log
+@@ -16,6 +18,6 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh \
+-    --experiment_config /users/zhangx/VATL_MM/configs/ablations/D.yaml \
+-    --output_dir /medias/medical/caravel/zhangx/training_outputs/ablations/D "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh \
++    --experiment_config /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/configs/ablations/D.yaml \
++    --output_dir /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/ablations/D "$@"
+diff --git a/training_script/ablations/E.sh b/training_script/ablations/E.sh
+index a2700d5..75b7571 100644
+--- a/training_script/ablations/E.sh
++++ b/training_script/ablations/E.sh
+@@ -1,5 +1,7 @@
+ #!/bin/bash
+-#SBATCH -p l40s
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
+ #SBATCH --time=6:00:00
+ #SBATCH --job-name=sdf_ablation_E
+ #SBATCH --output=sdf_ablation_E_%j.log
+@@ -16,6 +18,6 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh \
+-    --experiment_config /users/zhangx/VATL_MM/configs/ablations/E.yaml \
+-    --output_dir /medias/medical/caravel/zhangx/training_outputs/ablations/E "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh \
++    --experiment_config /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/configs/ablations/E.yaml \
++    --output_dir /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/ablations/E "$@"
+diff --git a/training_script/ablations/smoke_E.sh b/training_script/ablations/smoke_E.sh
+index 0437c27..162e2b0 100644
+--- a/training_script/ablations/smoke_E.sh
++++ b/training_script/ablations/smoke_E.sh
+@@ -2,12 +2,10 @@
+ # CPU only: no sbatch, GPU allocation, or volume generation.
+ set -euo pipefail
+ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+-set +eu
+-source "$HOME/.bashrc1"
+-conda activate torch
+-activation_status=$?
+-set -euo pipefail
+-(( activation_status == 0 )) || exit "$activation_status"
++module purge
++module load arch/a100
++module load pytorch-gpu/py3/2.8.0
++export PATH="${SDF_ENV:-/lustre/fswork/projects/rech/vnc/uil92qd/envs/vatl_torch}/bin:${PATH}"
+ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+ export MPLCONFIGDIR="${TMPDIR:-/tmp}/vatl_mm_mpl"
+ python -m unittest discover -s tests -p 'test_experiment_e.py' -v
+diff --git a/training_script/common.sh b/training_script/common.sh
+index 9b114bf..a3736eb 100644
+--- a/training_script/common.sh
++++ b/training_script/common.sh
+@@ -7,7 +7,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+     exit 1
+ fi
+ 
+-SDF_REPO="${SDF_REPO:-/users/zhangx/VATL_MM}"
++SDF_REPO="${SDF_REPO:-/lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM}"
+ SDF_NPROC="${SDF_NPROC:-4}"
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-off}"
+@@ -36,7 +36,7 @@ SDF_EXPERIMENT="n${SDF_NUM_EXPERTS}k2/graph_${SDF_GRAPH_MODE}"
+ if [[ "$SDF_RADIUS" == True ]]; then
+     SDF_EXPERIMENT="${SDF_EXPERIMENT}_radius"
+ fi
+-SDF_OUTPUT_ROOT="${SDF_OUTPUT_ROOT:-/medias/medical/caravel/zhangx/training_outputs/sdf}"
++SDF_OUTPUT_ROOT="${SDF_OUTPUT_ROOT:-/lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/sdf}"
+ 
+ SDF_COMMAND=(
+     srun --ntasks=1 python -m torch.distributed.run
+@@ -73,15 +73,20 @@ if [[ "${SDF_DRY_RUN:-0}" == 1 ]]; then
+     exit 0
+ fi
+ 
+-# The login setup references unset interactive variables and returns a nonzero status.
+-set +eu
+-source "$HOME/.bashrc1"
+-conda activate "${SDF_CONDA_ENV:-torch}"
+-activate_status=$?
+-set -euo pipefail
+-if (( activate_status != 0 )); then
+-    echo "Could not activate the training environment" >&2
+-    exit "$activate_status"
++# Load the modules required by the existing Jean Zay virtual environment.
++module purge
++module load arch/a100
++module load pytorch-gpu/py3/2.8.0
++export SDF_DATA_ROOT="${SDF_DATA_ROOT:-/lustre/fsn1/projects/rech/vnc/uil92qd/datasets/data/v1}"
++SDF_ENV="${SDF_ENV:-/lustre/fswork/projects/rech/vnc/uil92qd/envs/vatl_torch}"
++export PATH="${SDF_ENV}/bin:${PATH}"
++if [[ ! -x "${SDF_ENV}/bin/python" ]]; then
++    echo "Python environment missing: $SDF_ENV" >&2
++    exit 1
++fi
++if [[ ! -d "$SDF_DATA_ROOT" ]]; then
++    echo "Dataset directory missing: $SDF_DATA_ROOT" >&2
++    exit 1
+ fi
+ cd "$SDF_REPO"
+ 
+diff --git a/training_script/train_ddp_n4k2_t1_sdf.sh b/training_script/train_ddp_n4k2_t1_sdf.sh
+index 21021f9..096b565 100644
+--- a/training_script/train_ddp_n4k2_t1_sdf.sh
++++ b/training_script/train_ddp_n4k2_t1_sdf.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n4
+ #SBATCH --output=sdf_n4_%j.log
+ #SBATCH --error=sdf_n4_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-off}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n4k2_t1_sdf_graph_both.sh b/training_script/train_ddp_n4k2_t1_sdf_graph_both.sh
+index 817de7a..e807f65 100644
+--- a/training_script/train_ddp_n4k2_t1_sdf_graph_both.sh
++++ b/training_script/train_ddp_n4k2_t1_sdf_graph_both.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n4_graph_both
+ #SBATCH --output=sdf_n4_graph_both_%j.log
+ #SBATCH --error=sdf_n4_graph_both_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-both}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n4k2_t1_sdf_graph_ce.sh b/training_script/train_ddp_n4k2_t1_sdf_graph_ce.sh
+index b1eb92a..7b1cfda 100644
+--- a/training_script/train_ddp_n4k2_t1_sdf_graph_ce.sh
++++ b/training_script/train_ddp_n4k2_t1_sdf_graph_ce.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n4_graph_ce
+ #SBATCH --output=sdf_n4_graph_ce_%j.log
+ #SBATCH --error=sdf_n4_graph_ce_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n4k2_t1_sdf_graph_sdf.sh b/training_script/train_ddp_n4k2_t1_sdf_graph_sdf.sh
+index 876db76..d03b48b 100644
+--- a/training_script/train_ddp_n4k2_t1_sdf_graph_sdf.sh
++++ b/training_script/train_ddp_n4k2_t1_sdf_graph_sdf.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n4_graph_sdf
+ #SBATCH --output=sdf_n4_graph_sdf_%j.log
+ #SBATCH --error=sdf_n4_graph_sdf_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-sdf}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n4k2_t1_sdf_graph_sdf_radius.sh b/training_script/train_ddp_n4k2_t1_sdf_graph_sdf_radius.sh
+index 43c2090..81b6f7a 100644
+--- a/training_script/train_ddp_n4k2_t1_sdf_graph_sdf_radius.sh
++++ b/training_script/train_ddp_n4k2_t1_sdf_graph_sdf_radius.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n4_graph_sdf_radius
+ #SBATCH --output=sdf_n4_graph_sdf_radius_%j.log
+ #SBATCH --error=sdf_n4_graph_sdf_radius_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-sdf}"
+ SDF_RADIUS="${SDF_RADIUS:-True}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n8k2_t1_sdf.sh b/training_script/train_ddp_n8k2_t1_sdf.sh
+index 212fdbb..a0a3914 100644
+--- a/training_script/train_ddp_n8k2_t1_sdf.sh
++++ b/training_script/train_ddp_n8k2_t1_sdf.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n8
+ #SBATCH --output=sdf_n8_%j.log
+ #SBATCH --error=sdf_n8_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-8}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-off}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n8k2_t1_sdf_graph_both.sh b/training_script/train_ddp_n8k2_t1_sdf_graph_both.sh
+index 9105359..6f1e096 100644
+--- a/training_script/train_ddp_n8k2_t1_sdf_graph_both.sh
++++ b/training_script/train_ddp_n8k2_t1_sdf_graph_both.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n8_graph_both
+ #SBATCH --output=sdf_n8_graph_both_%j.log
+ #SBATCH --error=sdf_n8_graph_both_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-8}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-both}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n8k2_t1_sdf_graph_ce.sh b/training_script/train_ddp_n8k2_t1_sdf_graph_ce.sh
+index 9c23f35..22a1b86 100644
+--- a/training_script/train_ddp_n8k2_t1_sdf_graph_ce.sh
++++ b/training_script/train_ddp_n8k2_t1_sdf_graph_ce.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n8_graph_ce
+ #SBATCH --output=sdf_n8_graph_ce_%j.log
+ #SBATCH --error=sdf_n8_graph_ce_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-8}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n8k2_t1_sdf_graph_sdf.sh b/training_script/train_ddp_n8k2_t1_sdf_graph_sdf.sh
+index d4625e4..d4adc05 100644
+--- a/training_script/train_ddp_n8k2_t1_sdf_graph_sdf.sh
++++ b/training_script/train_ddp_n8k2_t1_sdf_graph_sdf.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n8_graph_sdf
+ #SBATCH --output=sdf_n8_graph_sdf_%j.log
+ #SBATCH --error=sdf_n8_graph_sdf_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-8}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-sdf}"
+ SDF_RADIUS="${SDF_RADIUS:-False}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"
+diff --git a/training_script/train_ddp_n8k2_t1_sdf_graph_sdf_radius.sh b/training_script/train_ddp_n8k2_t1_sdf_graph_sdf_radius.sh
+index 79644d6..d970bea 100644
+--- a/training_script/train_ddp_n8k2_t1_sdf_graph_sdf_radius.sh
++++ b/training_script/train_ddp_n8k2_t1_sdf_graph_sdf_radius.sh
+@@ -1,6 +1,8 @@
+ #!/bin/bash
+-#SBATCH -p l40s
+-#SBATCH --time=24:00:00
++#SBATCH --account=vnc@a100
++#SBATCH --qos=qos_gpu_a100-t3
++#SBATCH -C a100
++#SBATCH --time=20:00:00
+ #SBATCH --job-name=sdf_n8_graph_sdf_radius
+ #SBATCH --output=sdf_n8_graph_sdf_radius_%j.log
+ #SBATCH --error=sdf_n8_graph_sdf_radius_%j.err
+@@ -16,4 +18,4 @@ set -euo pipefail
+ SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-8}"
+ SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-sdf}"
+ SDF_RADIUS="${SDF_RADIUS:-True}"
+-source /users/zhangx/VATL_MM/training_script/common.sh "$@"
++source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh "$@"

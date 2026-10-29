@@ -1,14 +1,16 @@
 #!/bin/bash
-#SBATCH -p l40s
+#SBATCH --account=vnc@h100
+#SBATCH --qos=qos_gpu_h100-t3
+#SBATCH --partition=gpu_p6
+#SBATCH -C h100
 #SBATCH --time=6:00:00
 #SBATCH --job-name=sdf_ablation_D
 #SBATCH --output=sdf_ablation_D_%j.log
 #SBATCH --error=sdf_ablation_D_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --gres=gpu:h100:4
+#SBATCH --cpus-per-task=48
 
 set -euo pipefail
 
@@ -16,6 +18,6 @@ set -euo pipefail
 SDF_NUM_EXPERTS="${SDF_NUM_EXPERTS:-4}"
 SDF_GRAPH_MODE="${SDF_GRAPH_MODE:-ce}"
 SDF_RADIUS="${SDF_RADIUS:-False}"
-source /users/zhangx/VATL_MM/training_script/common.sh \
-    --experiment_config /users/zhangx/VATL_MM/configs/ablations/D.yaml \
-    --output_dir /medias/medical/caravel/zhangx/training_outputs/ablations/D "$@"
+source /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/training_script/common.sh \
+    --experiment_config /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/VATL_MM/configs/ablations/D.yaml \
+    --output_dir /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs/ablations/D "$@"

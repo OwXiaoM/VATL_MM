@@ -1,3 +1,9 @@
+Current Jean Zay presets request four H100 GPUs. See [H100 environment details](../docs/h100_setup.md).
+
+Jean Zay setup and validation: [scripts/jean_zay/README.md](../scripts/jean_zay/README.md).
+
+The notes below describe the original machine and include historical paths.
+
 # SDF training on this cluster
 
 Run from `/users/zhangx/VATL_MM`. All ten training presets request one node,

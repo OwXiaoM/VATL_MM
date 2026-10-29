@@ -1,3 +1,4 @@
+from data_paths import relocate_path
 import wandb as wd
 import pandas as pd
 import os
@@ -21,7 +22,6 @@ from utils import *
 
 import torch.nn.functional as F
 from data_loading.graph_store import GraphStore
-from subject_to_atlas import export_subject_to_atlas
 
 
 class AtlasBuilder:
@@ -331,6 +331,7 @@ class AtlasBuilder:
         """
         Validate the model on the validation set.
         """
+        self.save_state(epoch_train)
         if self.args["generate_cond_atlas"]:
             self.generate_atlas(epoch_train, n_max=100)
 
@@ -351,7 +352,6 @@ class AtlasBuilder:
 
         if not self.args.get("test_time_adaptation", {}).get("enabled", True):
             print("Test-time adaptation disabled; skipping held-out subject inference.")
-            self.save_state(epoch_train)
             return
 
         self._init_validation()
@@ -368,8 +368,6 @@ class AtlasBuilder:
         log_metrics(
             self.args, metrics_val, epoch_train, df=self.datasets["val"].df, split="val"
         )
-
-        self.save_state(epoch_train)
 
     def generate_subject_from_latent(
         self, latent_vec, condition_vector, transformation=None, split="train"
@@ -399,6 +397,12 @@ class AtlasBuilder:
         import nibabel as nib
 
         metrics = []
+        from data_loading.validation_selection import is_primary
+        if not is_primary(self.args):
+            return metrics
+
+        if not (self.args["compute_metrics"] or self.args["save_imgs"][split]):
+            return metrics
 
         def generate_native_grid(header_nii, world_bbox):
             shape = header_nii.shape
@@ -454,6 +458,7 @@ class AtlasBuilder:
 
             if (self.args.get("subject_to_atlas", {}).get("enabled", False)
                     and self.args["save_imgs"][split]):
+                from subject_to_atlas import export_subject_to_atlas
                 export_subject_to_atlas(
                     self.args, df_row_dict, transformations, epoch, split
                 )
@@ -464,7 +469,7 @@ class AtlasBuilder:
                         self.args, volume_inf, affine, df_row_dict, epoch, split
                     )
                 )
-            elif self.args["save_imgs"][split]:
+            if self.args["save_imgs"][split]:
                 save_subject(
                     self.args,
                     volume_inf,
@@ -812,7 +817,7 @@ class AtlasBuilder:
     def _init_dataloading(self, tsv_file=None, df_loaded=None, split="train"):
         shuffle = True if split == "train" else False
         tsv_file = (
-            pd.read_csv(self.args["dataset"]["tsv_file"], sep="\t")
+            pd.read_csv(relocate_path(self.args["dataset"]["tsv_file"]), sep="\t")
             if tsv_file is None
             else tsv_file
         )

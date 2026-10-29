@@ -1,3 +1,4 @@
+from data_paths import relocate_path
 import wandb as wd
 import pandas as pd
 import os
@@ -510,7 +511,7 @@ class AtlasBuilderDDP:
 
     def _init_dataloading(self, tsv_file=None, df_loaded=None, split="train"):
         tsv_file = (
-            pd.read_csv(self.args["dataset"]["tsv_file"], sep="\t")
+            pd.read_csv(relocate_path(self.args["dataset"]["tsv_file"]), sep="\t")
             if tsv_file is None
             else tsv_file
         )
@@ -600,6 +601,9 @@ class AtlasBuilderDDP:
         import nibabel as nib
 
         metrics = []
+        from data_loading.validation_selection import is_primary
+        if not is_primary(self.args):
+            return metrics
         if not (self.args["compute_metrics"] or self.args["save_imgs"][split]):
             return metrics
         model = self.inr_decoder[split]
@@ -664,7 +668,7 @@ class AtlasBuilderDDP:
                         self.args, volume_inf, affine, df_row_dict, epoch, split
                     )
                 )
-            elif self.args["save_imgs"][split]:
+            if self.args["save_imgs"][split]:
                 save_subject(
                     self.args,
                     volume_inf,

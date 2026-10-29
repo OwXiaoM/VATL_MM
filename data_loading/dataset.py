@@ -1,3 +1,5 @@
+from data_paths import relocate_dataframe
+from data_loading.validation_selection import select_validation, save_subject_manifest
 import os
 import math
 import matplotlib.pyplot as plt
@@ -22,10 +24,14 @@ class Data(Dataset):
             [self.sdf_key] if self.sdf_key else []
         )
         self.world_bbox = np.array(self.args["dataset"]["world_bbox"])
-        self.tsv_file = tsv_file
+        self.tsv_file = relocate_dataframe(tsv_file)
         self.df = (
-            self.filter_dataframe(self.tsv_file) if df_loaded is None else df_loaded
+            self.filter_dataframe(self.tsv_file if df_loaded is None else relocate_dataframe(df_loaded))
+            if df_loaded is None or split == "val" else relocate_dataframe(df_loaded)
         )
+
+        if split == "val":
+            save_subject_manifest(args, self.df["subject_id"].tolist())
 
         self.cache = {}
         # Cache remains disabled; augmentation is applied after loading.
@@ -131,6 +137,9 @@ class Data(Dataset):
         sampled with replacement. Every returned index refers to a real voxel.
         """
         config = self.args["dataset"].get("sdf_sampling", {})
+        uniform_fraction = float(config.get("uniform_fraction", 0.0))
+        if not np.isfinite(uniform_fraction) or not 0 <= uniform_fraction <= 1:
+            raise ValueError("sdf_sampling.uniform_fraction must be in [0, 1]")
         band_mm = float(config.get("surface_band_mm", 2.0))
         names = ("interior", "surface", "tissue", "background")
         defaults = (0.25, 0.35, 0.25, 0.15)
@@ -189,19 +198,21 @@ class Data(Dataset):
                 return valid & (sdf > band_mm) & (segmentation > 0)
             return valid & (sdf > band_mm) & (segmentation == 0)
 
+        uniform_count = int(num_points * uniform_fraction)
+        mixture_count = num_points - uniform_count
         available = np.array([np.any(pool_mask(name)) for name in names])
         weights *= available
         # Fall back to real in-bounds voxels if every requested pool is empty.
         if weights.sum() == 0:
             pool = np.flatnonzero(valid)
             selected = np.random.choice(
-                pool, num_points, replace=pool.size < num_points
+                pool, mixture_count, replace=pool.size < mixture_count
             )
         else:
             weights /= weights.sum()
-            counts = np.floor(weights * num_points).astype(int)
-            remainder = num_points - counts.sum()
-            order = np.argsort(-(weights * num_points - counts), kind="stable")
+            counts = np.floor(weights * mixture_count).astype(int)
+            remainder = mixture_count - counts.sum()
+            order = np.argsort(-(weights * mixture_count - counts), kind="stable")
             counts[order[:remainder]] += 1
             samples = []
             for name, count in zip(names, counts):
@@ -210,7 +221,10 @@ class Data(Dataset):
                     samples.append(
                         np.random.choice(pool, count, replace=pool.size < count)
                     )
-            selected = np.concatenate(samples)
+            selected = np.concatenate(samples) if samples else np.empty(0, dtype=np.int64)
+        if uniform_count:
+            pool = np.flatnonzero(valid)
+            selected = np.concatenate([selected, np.random.choice(pool, uniform_count, replace=pool.size < uniform_count)])
         return np.column_stack(np.unravel_index(selected, sdf.shape))
 
     def load_coords_and_values(self, modalities, normalize=True, prepared=None, original_count=None):
@@ -442,7 +456,15 @@ class Data(Dataset):
         df = self.sample_subject_ids(df)
         df = self.remove_missing_modalities(df)
         df = self.check_constraints(df)
-        df = self.sample_subjects(df)
+        if self.split == "val":
+            # Require real target files in validation; training eligibility is unchanged.
+            for key in self.target_keys:
+                if key not in df:
+                    raise ValueError(f"Required validation modality column missing: {key}")
+                df = df[df[key].map(lambda value: isinstance(value, str) and os.path.isfile(value))]
+            df = select_validation(self.args, df)
+        else:
+            df = self.sample_subjects(df)
         print("Sampled ", len(df), " subjects for split ", self.split, "\n")
         print("--------------------------------")
         return df

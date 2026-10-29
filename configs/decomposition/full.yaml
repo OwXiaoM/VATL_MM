@@ -1,0 +1,43 @@
+config_data: mra_atlas_synthseg_label_t1_fast_sdf
+amp: false
+batch_size: 2
+n_samples: 8192
+num_workers: 2
+save_every: 10
+epochs:
+  train: 100
+  val: 5
+dataset:
+  sdf_sampling:
+    enabled: true
+    num_points: 32768
+graph_supervision:
+  activate: true
+  mode: sdf
+  points_per_subject: 256
+  sdf_weight: 0.1
+  radius:
+    activate: false
+decomposition:
+  enabled: true
+  registration_enabled: true
+  topology_enabled: true # existing sampled centerline SDF, no connectivity guarantee
+  image_weight: 1.0
+  seg_weight: 1.0
+  lr_atlas: 1.0e-4
+  lr_registration: 1.0e-3 # translations now measured in mm
+  gradient_clip: 10.0
+  stages:
+    enabled: false
+  loss:
+    trunc_mm: 5.0
+    surface_band_mm: 1.0
+    near_surface_boost: 1.0
+    gradient_band_mm: 2.0
+    gradient_points: 256
+    difference_step_mm: 0.25
+    weights:
+      sdf: 1.0
+      surface: 0.1
+      eikonal: 0.01
+      registration: 0.001

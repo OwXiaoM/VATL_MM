@@ -1,0 +1,115 @@
+test_geometry_resampling_translation_and_labels (test_native_evaluation.NativeMetricsTests.test_geometry_resampling_translation_and_labels) ... ok
+test_identical_grid_no_resampling_and_separate_modalities (test_native_evaluation.NativeMetricsTests.test_identical_grid_no_resampling_and_separate_modalities) ... ok
+test_independent_sdf_and_segmentation_and_false_positives (test_native_evaluation.NativeMetricsTests.test_independent_sdf_and_segmentation_and_false_positives) ... ok
+test_no_sdf_and_invalid_geometry_reported (test_native_evaluation.NativeMetricsTests.test_no_sdf_and_invalid_geometry_reported) ... ok
+test_physical_distances_empty_masks_and_units (test_native_evaluation.NativeMetricsTests.test_physical_distances_empty_masks_and_units) ... ok
+test_results_summary_full_modality_lists_and_rank_zero (test_native_evaluation.NativeMetricsTests.test_results_summary_full_modality_lists_and_rank_zero) ... [val] Ordered evaluation subjects: ['synthetic']
+[val] Ordered evaluation subjects: ['synthetic']
+[val] Dice_multiclass: {'mean': 1.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] MRA_PSNR: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 0, 'positive_infinite_count': 1, 'nonfinite_count': 1}
+[val] MRA_SSIM: {'mean': 1.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] SDF_Vessel_ASD_mm: {'mean': 0.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] SDF_Vessel_Dice: {'mean': 1.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] SDF_Vessel_HD95_mm: {'mean': 0.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] Seg_Vessel_ASD_mm: {'mean': 0.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] Seg_Vessel_Dice: {'mean': 1.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] Seg_Vessel_HD95_mm: {'mean': 0.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] T1_PSNR: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 0, 'positive_infinite_count': 1, 'nonfinite_count': 1}
+[val] T1_SSIM: {'mean': 1.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+ok
+test_undefined_metrics_are_not_perfect_scores (test_native_evaluation.NativeMetricsTests.test_undefined_metrics_are_not_perfect_scores) ... [val] Ordered evaluation subjects: ['synthetic']
+[val] Ordered evaluation subjects: ['synthetic']
+[val] Dice_multiclass: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 1, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] MRA_PSNR: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 0, 'positive_infinite_count': 1, 'nonfinite_count': 1}
+[val] MRA_SSIM: {'mean': 1.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] SDF_Vessel_ASD_mm: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 1, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] SDF_Vessel_Dice: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 1, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] SDF_Vessel_HD95_mm: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 1, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] Seg_Vessel_ASD_mm: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 1, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] Seg_Vessel_Dice: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 1, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] Seg_Vessel_HD95_mm: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 1, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] T1_PSNR: {'mean': None, 'std': None, 'valid_count': 0, 'undefined_count': 0, 'positive_infinite_count': 1, 'nonfinite_count': 1}
+[val] T1_SSIM: {'mean': 1.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+ok
+test_manifest_is_not_overwritten (test_native_evaluation.ValidationSelectionTests.test_manifest_is_not_overwritten) ... [val] Ordered evaluation subjects: ['c', 'a']
+ok
+test_order_and_seed_independence_after_eligibility (test_native_evaluation.ValidationSelectionTests.test_order_and_seed_independence_after_eligibility) ... ok
+test_required_manifest_and_insufficient_eligible (test_native_evaluation.ValidationSelectionTests.test_required_manifest_and_insufficient_eligible) ... ok
+test_ablation_configs (test_sdf_decomposition.DecompositionTests.test_ablation_configs) ... ok
+test_checkpoint_roundtrip (test_sdf_decomposition.DecompositionTests.test_checkpoint_roundtrip) ... ok
+test_gradients_and_losses (test_sdf_decomposition.DecompositionTests.test_gradients_and_losses) ... ok
+test_metrics (test_sdf_decomposition.DecompositionTests.test_metrics) ... ok
+test_old_config_and_initialization (test_sdf_decomposition.DecompositionTests.test_old_config_and_initialization) ... ok
+test_one_subject_thin_vessel_overfit (test_sdf_decomposition.DecompositionTests.test_one_subject_thin_vessel_overfit) ... Synthetic thin-cylinder MSE: 0.418297 -> 0.000517
+ok
+test_physical_eikonal_linear_field (test_sdf_decomposition.DecompositionTests.test_physical_eikonal_linear_field) ... ok
+test_physical_rigid_inverse (test_sdf_decomposition.DecompositionTests.test_physical_rigid_inverse) ... ok
+test_shapes_identity_zero_and_sign (test_sdf_decomposition.DecompositionTests.test_shapes_identity_zero_and_sign) ... ok
+test_stages (test_sdf_decomposition.DecompositionTests.test_stages) ... ok
+test_unseen_adaptation_keeps_population_fixed (test_sdf_decomposition.DecompositionTests.test_unseen_adaptation_keeps_population_fixed) ... ok
+test_dataset_eligible_order_and_training_sampler_unchanged (test_validation_pipeline.ValidationPipelineTests.test_dataset_eligible_order_and_training_sampler_unchanged) ... --------------------------------
+Sampling data for split  val 
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 3, Number of subjects in subject_ids list: 3
+Number of subjects in dataframe after sampling: 3 
+
+Initial number of subjects: 3
+Number of subjects after removing missing modalities: 3
+Initial number of subjects: 3
+Number of subjects after constraints check: 3
+Sampled  2  subjects for split  val 
+
+--------------------------------
+--------------------------------
+Sampling data for split  val 
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 3, Number of subjects in subject_ids list: 3
+Number of subjects in dataframe after sampling: 3 
+
+Initial number of subjects: 3
+Number of subjects after removing missing modalities: 3
+Initial number of subjects: 3
+Number of subjects after constraints check: 3
+Sampled  2  subjects for split  val 
+
+--------------------------------
+--------------------------------
+Sampling data for split  train 
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 3, Number of subjects in subject_ids list: 3
+Number of subjects in dataframe after sampling: 3 
+
+Initial number of subjects: 3
+Number of subjects after removing missing modalities: 3
+Initial number of subjects: 3
+Number of subjects after constraints check: 3
+Sampled  2  subjects for split  train 
+
+--------------------------------
+ok
+test_generation_metrics_and_saving_independent_both_builders (test_validation_pipeline.ValidationPipelineTests.test_generation_metrics_and_saving_independent_both_builders) ... ok
+test_legacy_metric_lists_log_all_modalities (test_validation_pipeline.ValidationPipelineTests.test_legacy_metric_lists_log_all_modalities) ... [val] Ordered evaluation subjects: ['synthetic']
+[val] Ordered evaluation subjects: ['synthetic']
+[val] Dice_multiclass: {'mean': 0.5, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] MRA_PSNR: {'mean': 10.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] MRA_SSIM: {'mean': 0.2, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] T1_PSNR: {'mean': 20.0, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+[val] T1_SSIM: {'mean': 0.8, 'std': 0.0, 'valid_count': 1, 'undefined_count': 0, 'positive_infinite_count': 0, 'nonfinite_count': 0}
+ok
+test_metrics_generated_only_after_adaptation_finishes (test_validation_pipeline.ValidationPipelineTests.test_metrics_generated_only_after_adaptation_finishes) ... Starting inference for Epoch 7...
+Starting inference for Epoch 7...
+ok
+test_no_registration_during_metrics_export_or_legacy_resampling (test_validation_pipeline.ValidationPipelineTests.test_no_registration_during_metrics_export_or_legacy_resampling) ... Saved val/MRA_synthetic_ep=0.nii.gz to /tmp/tmp19qdgmvk/experiment
+Saved val/MRA_synthetic_ref.nii.gz to /tmp/tmp19qdgmvk/experiment
+Saved val/T1_synthetic_ep=0.nii.gz to /tmp/tmp19qdgmvk/experiment
+Saved val/T1_synthetic_ref.nii.gz to /tmp/tmp19qdgmvk/experiment
+Saved val/Seg_synthetic_ep=0.nii.gz to /tmp/tmp19qdgmvk/experiment
+Saved val/Seg_synthetic_ref.nii.gz to /tmp/tmp19qdgmvk/experiment
+Saved val/SDF_synthetic_ep=0.nii.gz to /tmp/tmp19qdgmvk/experiment
+Saved val/VesselMask_synthetic_ep=0.nii.gz to /tmp/tmp19qdgmvk/experiment
+ok
+
+----------------------------------------------------------------------
+Ran 26 tests in 9.771s
+
+OK

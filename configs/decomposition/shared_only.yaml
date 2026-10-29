@@ -1,0 +1,5 @@
+extends: full.yaml
+decomposition:
+  registration_enabled: false
+  stages:
+    enabled: false

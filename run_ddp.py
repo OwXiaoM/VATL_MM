@@ -8,6 +8,7 @@ Nested command-line overrides use double underscores, for example
 """
 
 import os
+from data_paths import relocate_path
 
 # Set thread limits before importing numerical libraries.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -249,7 +250,7 @@ def initial_setup(cmd_args):
     args = {**args_data, **args_atlas}
     args["config_data"] = config_data_name
 
-    subject_ids_path = args["dataset"]["subject_ids"]
+    subject_ids_path = relocate_path(args["dataset"]["subject_ids"])
     subject_ids_yaml = load_yaml(subject_ids_path)
     dataset_name = args["dataset"]["dataset_name"]
 

@@ -1,0 +1,23 @@
+extends: full.yaml
+n_subjects:
+  train: 1
+batch_size: 1
+num_workers: 0
+n_samples: 256
+epochs:
+  train: 3
+save_every: 1
+dataset:
+  sdf_sampling:
+    num_points: 512
+inr_decoder:
+  latent_dim: [8, 1, 1, 1]
+  cnn_kernel_size: 0
+  hidden_size: 32
+  num_hidden_layers: 2
+  modulated_layers: [1]
+  num_experts: 2
+  moe_k: 2
+decomposition:
+  loss:
+    gradient_points: 16

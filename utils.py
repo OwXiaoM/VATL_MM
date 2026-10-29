@@ -558,7 +558,6 @@ def save_subject(
     channels = reconstruction_channels(args)
     if img.shape[-1] <= max(i for _, i, _ in channels):
         raise ValueError("Subject volume is missing required reconstruction channels")
-    mytx = None
     modalities = args["dataset"]["modalities"]
     for i, mod in enumerate(modalities):
         if i == len(modalities) - 1:
@@ -568,13 +567,8 @@ def save_subject(
         filename = f"{split}/{mod}_{sub_name}_ep={epoch}.nii.gz"
         save_img(img_mod, affine, args["output_dir"], filename)
         if epoch == 0 and sub_row_df is not None:
-            is_seg = i == len(modalities) - 1
-            pred_mod_nii = nib.Nifti1Image(img_mod, affine)
-            pred_mask_nii = nib.Nifti1Image(img[..., len(modalities) - 1], affine)
+            # Export the untouched native reference; never estimate a transform.
             ref_mod_nii = nib.load(sub_row_df[mod])
-            pred_mod_nii, ref_mod_nii, mytx = reg_imgs(
-                pred_mod_nii, ref_mod_nii, pred_mask_nii, mytx, "Rigid", is_seg
-            )
             filename_ref = f"{split}/{mod}_{sub_name}_ref.nii.gz"
             save_img(
                 ref_mod_nii.get_fdata(),
@@ -680,175 +674,31 @@ def nib_to_ants(nii_img):
 
 
 def compute_metrics(
-    args, pred, affine, df_row_dict, epoch, split, reg_type="Rigid", bg_label=None
+    args, pred, affine, df_row_dict, epoch, split, reg_type=None, bg_label=None
 ):
-    """Compute image and tissue metrics on the reference image grids."""
+    """Native full-reference-grid evaluation after adaptation; no registration.
+
+    reg_type/bg_label remain accepted for call compatibility. Labels are resolved
+    from dataset.label_names. Image saving is handled independently by the caller.
+    """
+    from native_evaluation import compute_native_metrics
     pred, affine = typecheck_img_affine(pred, affine)
-    metrics = {"Subject": df_row_dict["subject_id"], "PSNR": [], "SSIM": [], "DICE": []}
-    modalities = args["dataset"]["modalities"]
-    sub_id = df_row_dict["subject_id"]
-
-    if bg_label is None and "Background" in args["dataset"]["label_names"]:
-        bg_label = args["dataset"]["label_names"].index("Background")
-    else:
-        bg_label = 0
-
-    for i, mod in enumerate(modalities):
-        is_seg = i == len(modalities) - 1 and ("Seg" in mod or "Mask" in mod)
-
-        mod_ref_nii = nib.load(df_row_dict[mod])
-        mod_pred_nii = nib.Nifti1Image(pred[..., i], affine)
-
-        try:
-            fix = nib_to_ants(mod_ref_nii)
-            mov = nib_to_ants(mod_pred_nii)
-        except Exception as e:
-            print(f"[Error] Failed to convert nifti to ants for {mod}: {e}. Skipping.")
-            continue
-
-        try:
-            interp_type = "genericLabel" if is_seg else "linear"
-            mov = ants.resample_image_to_target(mov, fix, interp_type=interp_type)
-        except Exception as e:
-            print(f"[Error] Resampling failed for {mod}: {e}. Skipping metric.")
-            continue
-
-        if not is_seg:
-            mov_arr = mov.numpy()
-            fix_arr = fix.numpy()
-            if mov_arr.max() - mov_arr.min() > 1e-6:
-                mov = (mov - mov_arr.min()) / (mov_arr.max() - mov_arr.min())
-            if fix_arr.max() - fix_arr.min() > 1e-6:
-                fix = (fix - fix_arr.min()) / (fix_arr.max() - fix_arr.min())
-
-        mod_pred_reg_nii = ants_to_nib(mov)
-        mod_ref_nii = ants_to_nib(fix)
-
-        bbox, _ = get_bbox(mod_ref_nii)
-        x_min, y_min, z_min = bbox[0]
-        x_max, y_max, z_max = bbox[1] + 1
-
-        mod_pred_reg_cropped = mod_pred_reg_nii.get_fdata()[
-            x_min:x_max, y_min:y_max, z_min:z_max
-        ]
-        mod_ref_cropped = mod_ref_nii.get_fdata()[x_min:x_max, y_min:y_max, z_min:z_max]
-
-        if not is_seg:
-            metrics["PSNR"].append(
-                psnr_metric(mod_pred_reg_cropped, mod_ref_cropped, data_range=1.0)
-            )
-            metrics["SSIM"].append(
-                ssim_metric(mod_pred_reg_cropped, mod_ref_cropped, data_range=1.0)
-            )
-        else:
-            metrics["DICE"].append(
-                compute_dice(mod_pred_reg_cropped, mod_ref_cropped, bg_label)
-            )
-
-        if args["save_imgs"][split]:
-            fn_pred = f"{split}/{mod}_{sub_id}_ep={epoch}.nii.gz"
-            fn_ref = f"{split}/{mod}_{sub_id}_ref.nii.gz"
-            save_img(
-                mod_pred_reg_nii.get_fdata(),
-                mod_pred_reg_nii.affine,
-                args["output_dir"],
-                fn_pred,
-            )
-            save_img(
-                mod_ref_nii.get_fdata(), mod_ref_nii.affine, args["output_dir"], fn_ref
-            )
-
-    if args["save_imgs"][split]:
-        save_subject_extras(args, pred, affine, sub_id, epoch, split)
-    return metrics
+    return compute_native_metrics(args, pred, affine, df_row_dict, epoch, split)
 
 
 def reg_imgs(
-    fix_nii, mov_nii, mask_mov_nii=None, mytx=None, reg_type="Rigid", is_seg=False
+    fix_nii, mov_nii, mask_mov_nii=None, mytx=None, reg_type=None, is_seg=False
 ):
-    """Register or resample the moving image to the fixed image grid."""
+    """Legacy tuple interface, now geometry-only: no estimated registration.
 
-    def get_zeros_like_fixed(fixed_nii):
-        zeros_data = np.zeros(fixed_nii.shape, dtype=fixed_nii.get_fdata().dtype)
-        return nib.Nifti1Image(zeros_data, fixed_nii.affine, fixed_nii.header)
-
-    try:
-        fix = nib_to_ants(fix_nii)
-        mov = nib_to_ants(mov_nii)
-    except Exception as e:
-        print(f"[Error] Failed to convert nifti to ants: {e}")
-        return fix_nii, get_zeros_like_fixed(fix_nii), None
-
-    mask_mov = None
-    if mask_mov_nii is not None:
-        try:
-            mask_mov = nib_to_ants(mask_mov_nii) > 0
-        except:
-            pass
-
-    ip = "genericLabel" if is_seg else "linear"
-    fallback = False
-
-    if np.sum(np.abs(fix.numpy())) < 1e-3:
-        print(
-            "[Warning] Fixed image (Pred) is empty. Registration skipped. Using Identity Resample."
-        )
-        fallback = True
-    elif np.sum(np.abs(mov.numpy())) < 1e-3:
-        print("[Warning] Moving image (Ref) is empty.")
-        return fix_nii, get_zeros_like_fixed(fix_nii), None
-
-    if not fallback and mytx is None:
-        if mask_mov is not None:
-            mov = mov * mask_mov
-        try:
-            mytx = ants.registration(fix, mov, type_of_transform=reg_type)
-            mov_reg = mytx["warpedmovout"]
-        except Exception as e:
-            print(
-                f"[Warning] ANTs registration failed: {e}. Falling back to Identity Transform."
-            )
-            fallback = True
-
-    if fallback:
-        try:
-            mov_reg = ants.resample_image_to_target(mov, fix, interp_type=ip)
-            mytx = None
-        except Exception as e:
-            print(f"[Error] Identity resample failed: {e}. Returning zeros.")
-            return fix_nii, get_zeros_like_fixed(fix_nii), None
-
-    elif mytx is not None:
-        try:
-            if "fwdtransforms" in mytx:
-                mov_reg = ants.apply_transforms(
-                    fix, mov, mytx["fwdtransforms"], interpolator=ip
-                )
-            else:
-                pass
-        except Exception as e:
-            print(f"[Error] Apply transforms failed: {e}. Returning zeros.")
-            return fix_nii, get_zeros_like_fixed(fix_nii), None
-
-    if mask_mov is not None and mytx is not None and not fallback:
-        try:
-            mask_mov_reg = ants.apply_transforms(
-                fix, mask_mov, mytx["fwdtransforms"], interpolator="genericLabel"
-            )
-            fix = fix * mask_mov_reg
-        except:
-            pass
-
-    if not is_seg:
-        mov_arr = mov_reg.numpy()
-        mov_min, mov_max = mov_arr.min(), mov_arr.max()
-        if (mov_max - mov_min) > 1e-6:
-            mov_reg = (mov_reg - mov_min) / (mov_max - mov_min)
-
-    fix_nii_out = ants_to_nib(fix)
-    mov_reg_nii_out = ants_to_nib(mov_reg)
-
-    return fix_nii_out, mov_reg_nii_out, mytx
+    Existing reg_type/mask arguments are accepted but do not alter the metric
+    region. Applying learned STN maps remains the decoder's responsibility.
+    """
+    from native_evaluation import geometry_resample
+    if mytx is not None:
+        raise ValueError("Evaluation does not accept estimated registration transforms")
+    values, _ = geometry_resample(mov_nii, fix_nii, labels=is_seg)
+    return fix_nii, nib.Nifti1Image(values, fix_nii.affine), None
 
 
 def get_bbox(img):
@@ -874,58 +724,19 @@ def get_bbox(img):
 
 
 def compute_dice(pred, ref, bg_label):
+    """Legacy multiclass Dice API; an empty foreground union is undefined."""
+    from native_evaluation import multiclass_dice
     if pred.shape != ref.shape:
         raise ValueError("The shape of pred and ref must be the same.")
-
-    labels = np.union1d(np.unique(pred), np.unique(ref))
-    labels = labels[(labels != 0) & (labels != bg_label)]
-
-    if len(labels) == 0:
-        return 1.0
-
-    dice_scores = []
-    for label in labels:
-        pred_mask = pred == label
-        ref_mask = ref == label
-        intersection = np.count_nonzero(pred_mask & ref_mask)
-        pred_sum = np.count_nonzero(pred_mask)
-        ref_sum = np.count_nonzero(ref_mask)
-
-        if pred_sum + ref_sum == 0:
-            dice = 1.0
-        else:
-            dice = (2.0 * intersection) / (pred_sum + ref_sum)
-        dice_scores.append(dice)
-
-    return np.mean(dice_scores)
+    return multiclass_dice(pred, ref, bg_label)
 
 
 def log_metrics(args, metrics, epoch, df=None, split="train"):
-    if not metrics or len(metrics) == 0:
-        print(f"[{split}] No metrics computed. Skipping metric logging.")
-        return
-    metrics_keys = list(metrics[0].keys())
-    mod_keys = args["dataset"]["modalities"]
-    for metric_key in metrics_keys:
-        if metric_key == "Subject":
-            continue
-        metric_vals = [m[metric_key][0] for m in metrics]
-        metric_vals = np.array(metric_vals)
-        metric_mean = np.mean(metric_vals, axis=0).item()
-        metric_std = np.std(metric_vals, axis=0).item()
-        print(f"{metric_key}: {metric_mean:.3f} +/- {metric_std:.3f}")
-        if args["logging"]:
-            wd.log({f"{split}/{metric_key}": metric_mean})
-
-    with open(
-        os.path.join(args["output_dir"], f"{split}/{split}_metrics_ep={epoch}.json"),
-        "w",
-    ) as f:
-        json.dump(metrics, f, indent=4, cls=NumpyEncoder)
-    if df is not None:
-        df.to_csv(
-            os.path.join(args["output_dir"], f"{split}/{split}_df.csv"), index=False
-        )
+    from native_evaluation import write_metric_results
+    summary = write_metric_results(args, metrics, epoch, df, split)
+    if args.get("logging", False) and summary:
+        wd.log({f"{split}/{name}": stats["mean"] for name, stats in summary.items()
+                if stats["valid_count"] > 0})
 
 
 def log_loss(loss, epoch, split, log=True):

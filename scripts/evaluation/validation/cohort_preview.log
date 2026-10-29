@@ -1,0 +1,14 @@
+--------------------------------
+Sampling data for split  val 
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 552, Number of subjects in subject_ids list: 55
+Number of subjects in dataframe after sampling: 55 
+
+Initial number of subjects: 55
+Number of subjects after removing missing modalities: 55
+Initial number of subjects: 55
+Number of subjects after constraints check: 55
+Sampled  3  subjects for split  val 
+
+--------------------------------
+[val] Ordered evaluation subjects: ['IXI403-Guys-0965', 'IXI037-Guys-0704', 'IXI050-Guys-0711']

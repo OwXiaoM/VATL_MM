@@ -2,7 +2,7 @@ root_dir: '' # if empty, use current working directory
 
 # --------- Logging Parameters ---------
 logging: False # if True, log to wandb
-output_dir: /medias/medical/caravel/zhangx/training_outputs # directory to save the model, reconstruction images, atlases, etc.
+output_dir: /lustre/fswork/projects/rech/vnc/uil92qd/projects/VATL_SDF/training_outputs # directory to save the model, reconstruction images, atlases, etc.
 wandb_entity: # wandb entity
 project_name: CINeMA # wandb project name
 config_data: dhcp_neo_preterm_mm # name of the dataset to use (specified in config_data.yaml)
@@ -30,6 +30,13 @@ load_model:
 test_time_adaptation:
   enabled: True # fit held-out subjects using epochs.val; False skips held-out inference
 compute_metrics: False # calculate reconstruction metrics against subject references
+evaluation:
+  subject_manifest: null # optional prior val/subject_ids.json; exact ordered match required
+  intensity_normalization: none # stored reference and prediction scales; legacy: independent_minmax
+  data_range: 1.0 # fixed PSNR/SSIM range; must match preprocessing
+  assume_mm_if_unknown: false # fail metrics explicitly when spatial units are unknown
+  hash_checkpoint: false # optional SHA256 of evaluated checkpoint (extra I/O)
+
 subject_to_atlas:
   enabled: False # requires the optional subject_to_atlas.py exporter (not included)
   mask_keys: [] # extra dataset columns with label masks (nearest neighbor)

@@ -1,3 +1,4 @@
+from data_paths import relocate_path
 import os
 from datetime import datetime
 import yaml
@@ -84,7 +85,7 @@ def initial_setup(cmd_args=None):
         )
         args_data = {"dataset": yaml.safe_load(stream)[config_data]}
     args = {**args_data, **args_atlas}
-    with open(args["dataset"]["subject_ids"], "r") as stream:
+    with open(relocate_path(args["dataset"]["subject_ids"]), "r") as stream:
         args["dataset"]["subject_ids"] = yaml.safe_load(stream)[
             args["dataset"]["dataset_name"]
         ]["subject_ids"]

@@ -1,0 +1,58 @@
+[Gloo] Rank [Gloo] Rank 1 is connected to 10 peer ranks.  is connected to Expected number of connected peer ranks is : 11 peer ranks. 
+Expected number of connected peer ranks is : 1
+----------------------------------------------------------------
+Sampling data for split 
+ trainSampling data for split   
+train
+ 
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 1, Number of subjects in subject_ids list: 1
+
+Sampling subjects from subject_ids list. Number of subjects in dataframe: 1, Number of subjects in subject_ids list: 1
+Number of subjects in dataframe after sampling: 1 
+Number of subjects in dataframe after sampling: 1 
+
+
+Initial number of subjects:Initial number of subjects:  11
+
+Number of subjects after removing missing modalities:Number of subjects after removing missing modalities:  11
+
+Initial number of subjects:Initial number of subjects: 1 
+1
+Number of subjects after constraints check:Number of subjects after constraints check:  11
+
+[sample_subjects] # subjects before sampling: 1
+[sample_subjects] # subjects before sampling: 1[sample_subjects] Constraints in priority order:
+ [sample_subjects] Constraints in priority order:['scan_age'] 
+['scan_age']
+Bin labels: ['[19.0,20.0]', '[20.0,21.0]', '[21.0,22.0]', '[22.0,23.0]', '[23.0,24.0]', '[24.0,25.0]', '[25.0,26.0]', '[26.0,27.0]', '[27.0,28.0]', '[28.0,29.0]', '[29.0,30.0]', '[30.0,31.0]', '[31.0,32.0]', '[32.0,33.0]', '[33.0,34.0]', '[34.0,35.0]', '[35.0,36.0]', '[36.0,37.0]', '[37.0,38.0]', '[38.0,39.0]', '[39.0,40.0]', '[40.0,41.0]', '[41.0,42.0]', '[42.0,43.0]', '[43.0,44.0]', '[44.0,45.0]', '[45.0,46.0]', '[46.0,47.0]', '[47.0,48.0]', '[48.0,49.0]', '[49.0,50.0]', '[50.0,51.0]', '[51.0,52.0]', '[52.0,53.0]', '[53.0,54.0]', '[54.0,55.0]', '[55.0,56.0]', '[56.0,57.0]', '[57.0,58.0]', '[58.0,59.0]', '[59.0,60.0]', '[60.0,61.0]', '[61.0,62.0]', '[62.0,63.0]', '[63.0,64.0]', '[64.0,65.0]', '[65.0,66.0]', '[66.0,67.0]', '[67.0,68.0]', '[68.0,69.0]', '[69.0,70.0]', '[70.0,71.0]', '[71.0,72.0]', '[72.0,73.0]', '[73.0,74.0]', '[74.0,75.0]', '[75.0,76.0]', '[76.0,77.0]', '[77.0,78.0]', '[78.0,79.0]', '[79.0,80.0]', '[80.0,81.0]', '[81.0,82.0]', '[82.0,83.0]', '[83.0,84.0]', '[84.0,85.0]', '[85.0,86.0]', '[86.0,87.000001]']
+Bin labels: ['[19.0,20.0]', '[20.0,21.0]', '[21.0,22.0]', '[22.0,23.0]', '[23.0,24.0]', '[24.0,25.0]', '[25.0,26.0]', '[26.0,27.0]', '[27.0,28.0]', '[28.0,29.0]', '[29.0,30.0]', '[30.0,31.0]', '[31.0,32.0]', '[32.0,33.0]', '[33.0,34.0]', '[34.0,35.0]', '[35.0,36.0]', '[36.0,37.0]', '[37.0,38.0]', '[38.0,39.0]', '[39.0,40.0]', '[40.0,41.0]', '[41.0,42.0]', '[42.0,43.0]', '[43.0,44.0]', '[44.0,45.0]', '[45.0,46.0]', '[46.0,47.0]', '[47.0,48.0]', '[48.0,49.0]', '[49.0,50.0]', '[50.0,51.0]', '[51.0,52.0]', '[52.0,53.0]', '[53.0,54.0]', '[54.0,55.0]', '[55.0,56.0]', '[56.0,57.0]', '[57.0,58.0]', '[58.0,59.0]', '[59.0,60.0]', '[60.0,61.0]', '[61.0,62.0]', '[62.0,63.0]', '[63.0,64.0]', '[64.0,65.0]', '[65.0,66.0]', '[66.0,67.0]', '[67.0,68.0]', '[68.0,69.0]', '[69.0,70.0]', '[70.0,71.0]', '[71.0,72.0]', '[72.0,73.0]', '[73.0,74.0]', '[74.0,75.0]', '[75.0,76.0]', '[76.0,77.0]', '[77.0,78.0]', '[78.0,79.0]', '[79.0,80.0]', '[80.0,81.0]', '[81.0,82.0]', '[82.0,83.0]', '[83.0,84.0]', '[84.0,85.0]', '[85.0,86.0]', '[86.0,87.000001]']
+Bin sizes: [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1]
+Bin sizes: [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1]
+Required (additional) samples per remaining bin: 1
+Required (additional) samples per remaining bin: 1
+Samples drawn per bin: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+Samples drawn per bin: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[sample_subjects] # subjects after nested sampling: 1
+Sampled  1 [sample_subjects] # subjects after nested sampling: 1 subjects for split  
+train 
+
+--------------------------------Sampled 
+ [train] Data Caching Enabled: False1
+  subjects for split  train 
+
+--------------------------------
+[train] Data Caching Enabled: False
+[rank1]:[W1026 16:27:04.321394392 reducer.cpp:1457] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank0]:[W1026 16:27:04.321410845 reducer.cpp:1457] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+epoch=0 stage=A batch=0 total=3.48327
+epoch=1 stage=B batch=0 total=3.46254
+epoch=2 stage=C batch=0 total=3.42531
+[Gloo] Rank [Gloo] Rank 0 is connected to 11 is connected to  peer ranks. 1Expected number of connected peer ranks is :  peer ranks. 1Expected number of connected peer ranks is : 
+1
+[train] Data Caching Enabled: False
+[train] Data Caching Enabled: False
+[rank1]:[W1026 16:28:01.895928136 reducer.cpp:1457] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank0]:[W1026 16:28:01.895932231 reducer.cpp:1457] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+epoch=1 stage=B batch=0 total=3.46254
+epoch=2 stage=C batch=0 total=3.42531
+Synthetic training passed (topology=True, resume=True)

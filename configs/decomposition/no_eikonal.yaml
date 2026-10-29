@@ -1,0 +1,5 @@
+extends: full.yaml
+decomposition:
+  loss:
+    weights:
+      eikonal: 0.0

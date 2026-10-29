@@ -1,0 +1,5 @@
+# Preserve downloaded reference documents as binary files.
+*.pdf binary
+# Retain raw historical verification logs and patch snapshots verbatim.
+*.log -whitespace
+scripts/decomposition/preexisting_changes.patch -whitespace

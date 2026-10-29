@@ -1,0 +1,12 @@
+# Flat overrides consumed by run_ddp.py --experiment_config.
+compute_metrics: true
+seed: 42 # fixed adaptation initialization; subject selection itself is seed independent
+test_time_adaptation__enabled: true
+save_imgs__val: false
+n_subjects__val: 3
+epochs__val: 5
+generate_cond_atlas: false
+evaluation__intensity_normalization: none
+evaluation__data_range: 1.0
+evaluation__assume_mm_if_unknown: false
+evaluation__hash_checkpoint: false
