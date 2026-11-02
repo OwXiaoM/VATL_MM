@@ -1,0 +1,26 @@
+# Runtime artifacts are deliberately excluded.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+results/
+outputs/
+logs/
+checkpoints/
+datasets/
+artifacts/
+*.pt
+*.pth
+*.ckpt
+*.npz
+*.npy
+*.nii
+*.nii.gz
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.log
+*.out
+slurm-*
