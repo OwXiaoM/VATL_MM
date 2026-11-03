@@ -24,3 +24,12 @@ artifacts/
 *.log
 *.out
 slurm-*
+
+# Additional generated scientific artifacts
+*.zip
+*.html
+*.png
+*.ply
+*.vtk
+*.csv
+*.tsv

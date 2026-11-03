@@ -1,0 +1,74 @@
+kind: controlled_research_protocol
+status: prepared_not_launched
+reason: partial_volume_targets_fail_fixed_threshold_topology_gate
+training_config_template: configs/vesseltok/gap16_replace.yaml
+requires_sampler_adapter_and_regression_checks_before_submission: true
+pseudo_radius_mm: 1.0
+threshold: 0.5
+arms:
+  A: existing_16_gap_negative_and_64_inter_anchor_positive_baseline
+  B: same_baseline_plus_up_to_16_reallocated_local_native_positive_queries
+local_positive_pool:
+  source: training_graph_and_native_MRA_affine_only
+  coordinates: native_voxel_centers_mapped_to_world_mm
+  label: exact_point_inside_union_of_1mm_graph_capsules
+  minimum_label: binary_1
+  maximum_distance_to_frozen_gap_candidate_mm: 3.0
+  require_observed_voxel_center: true
+  require_inside_isotropic_model_cube: true
+  use_segmentation_or_sdf: false
+  mine_model_errors: false
+pairing:
+  negatives: retain_exact_16_gap_queries_and_all_other_negative_locations
+  order: ascending_original_gap_query_slot
+  positive_partner: uniform_with_replacement_among_positive_voxel_centers_within_3mm_of_this_negative
+  protected_original_slots: remaining_original_positive_interior_slots_excluding_64_inter_anchor_plan
+  original_interior_radius_mm: 0.5
+  cap_per_subject_step: 16
+  private_seed: 61103
+  no_partner_or_insufficient_slots: retain_subject_and_original_queries_log_actual_count_do_not_relax_rule
+  control_A: generate_identical_shadow_positive_proposals_but_do_not_apply
+  experimental_B: apply_positive_proposals_only
+fixed:
+  model_tokens: 1024
+  input_points: 8192
+  queries_per_subject: 512
+  positive_slots: 256
+  negative_slots: 256
+  batch_size: 2
+  seed: 42
+  optimizer: AdamW
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  loss: ordinary_binary_BCE_with_logits_unchanged
+  steps: 2000
+  transforms: disabled
+  demographics: disabled
+  inter_anchor_private_seed: 9215
+  gap_private_seed: 28411
+  inter_anchor_rule_and_query_locations: unchanged
+selection:
+  policy: native_geometry_v1
+  subjects: saved_selection_validation_only
+  threshold: 0.5
+  checkpoint_steps: [500, 1000, 1500, 2000]
+  final_2000_sensitivity_if_selected_earlier: true
+cohort:
+  training_and_selection_validation: reuse_clean_saved_cohorts
+  confirmation: reserve_and_verify_genuinely_unused_people_before_any_fitting
+  current_validation_stage_confirmation_access: none
+checks:
+  - exact_point_labels_for_all_new_positive_queries
+  - identical_negative_queries_inter_anchor_queries_base_indices_labels_and_inputs
+  - separate_private_RNG_no_global_stream_change
+  - shadow_plans_retained_queries_and_optimizer_parameter_groups
+  - reference_A_bitwise_replays_existing_gap16_B_model
+  - actual_FPS_and_native_world_mm_FOV_consistency
+  - checkpoint_and_split_provenance
+  - no_final_evaluation_guided_sampling_threshold_or_selection
+report:
+  graph_pseudo: [Dice, IoU, complete_continuous_paths, complete_native_paths, excess_connections, missing_connections, fragmentation, volume_ratio]
+  anatomical: separate_after_frozen_predictions
+  compare_partial_volume_supervision: false
+  new_architecture_or_loss: false
+  automatically_submit_training: false

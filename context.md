@@ -31,3 +31,35 @@ query balance,token decoding,native validation provenance/leakage guards,
 connectivity and paired samplers. All runtime outputs belong outside version
 control. Use allocated Slurm compute for GPU work. Preserve existing VATL source
 and user data; do not launch expensive scaling as part of setup or validation.
+
+
+## Current implementation checkpoint — 2026-11-03
+
+The branch now includes read-only break-localization helpers/drivers and physical
+partial-volume target validation,with their synthetic regression tests. External
+cache/model/plan paths are explicit CLI inputs;private experiment files are not
+bundled. The original training model,activation,BCE and checkpoint policy are
+unchanged. Break audits keep training/selection-validation scope separate from
+final evaluation and distinguish realized negative queries from candidate geometry.
+They preserve cached training inputs and saved validation fields,verify sampler
+replay/RNG and frozen parameters,and report point/native path transitions.
+
+Voxel occupancy fraction is deterministic physical cell fill,not uncertainty
+about vessel presence. The implementation uses full native affine vectors and
+subcell integration bounds. Validation found that majority thresholding can erase
+subvoxel vessels or join narrow gaps;partial-volume soft-target training was NOT
+launched. Numerical sampling refinement was required and validated. Raw experiment
+measurements,subject lists,figures,logs and data stay outside this branch.
+
+NEXT AUTHORIZED TASK (pending implementation at this push):implement the local-
+positive protection sampler and tests,then run a controlled two-arm2000-step pilot
+on allocated Slurm GPUs only after checks pass. Keep16gap negatives and64inter-
+anchor positives identical;only B may reallocate up to16other positives to exact
+binary graph-positive native voxel centers within3mm of gap queries. Keep inputs,
+query/class budget,initialization,BCE,optimizer and model fixed;no transforms or
+demographic conditioning. Freeze rule/unused confirmation cohort before fitting;
+unchanged native_geometry_v1 and threshold.5. No confirmation-guided tuning.
+The adapter did not exist and no such training was submitted before this snapshot.
+configs/vesseltok/local_positive_protocol.yaml records the prepared rule and
+required checks;it is not a loadable training config or a completed experiment.
+Do not start partial-volume training,increase budget or publish experiment outputs.

@@ -79,3 +79,6 @@ checkpoints or caches are included in this branch.
 
 See DEPENDENCIES.md for attribution and environment details; root context.md
 records the implementation scope and constraints.
+
+
+Read-only break and partial-volume validation tools are described in [VALIDATION.md](VALIDATION.md). Current task status and the pending binary local-positive adapter are recorded in root context.md.
