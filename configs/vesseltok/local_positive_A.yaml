@@ -1,0 +1,53 @@
+batch_size: 2
+class_balanced_batches: true
+edge_spacing_mm: 0.5
+evaluation_subjects: 3
+halo_mm: 3.0
+input_points: 8192
+kl_warmup_steps: 500
+kl_weight: 0.0001
+lr: 0.0003
+manifest: /path/to/subject_splits.yaml
+metadata: /path/to/metadata.tsv
+model:
+  attention_scale: 0.05
+  bands: 8
+  condition_dim: 0
+  cross_heads: 1
+  decoder_layers: 2
+  encoder_layers: 2
+  heads: 4
+  latent_dim: 8
+  output_layer_norm: false
+  relative_feature_scale: 0.0125
+  spatial_anchors: true
+  tokens: 1024
+  variational: false
+  width: 96
+patch_mm: 256.0
+patches_per_subject: 16
+pseudo_radius_mm: 1.0
+queries_per_step: 512
+query_pool: 32768
+representation: subject_tokens
+sampling_strategy: perpendicular_boundary
+seed: 42
+steps: 2000
+threshold: 0.5
+train_subjects: 24
+validate_every: 250
+validation_patches: 6
+validation_subjects: 2
+weight_decay: 0.0001
+input_sampling: nested_4096
+checkpoint_selection: native_geometry_v1
+retain_checkpoints_every: 500
+inter_anchor_mode: replace
+inter_anchor_replacements: 64
+inter_anchor_private_seed: 9215
+gap_mode: replace
+gap_replacements: 16
+gap_private_seed: 28411
+local_positive_mode: control
+local_positive_cap: 16
+local_positive_seed: 61103

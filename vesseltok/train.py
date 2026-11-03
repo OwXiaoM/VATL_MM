@@ -23,7 +23,7 @@ from vesseltok.inter_anchor_streams import SamplingStreams
 
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument('--config',required=True); parser.add_argument('--prepared',required=True);parser.add_argument('--output',required=True)
-    parser.add_argument('--sampling-pool');parser.add_argument('--gap-pool');parser.add_argument('--steps',type=int); parser.add_argument('--device',default='cuda');parser.add_argument('--prepare-only',action='store_true'); args=parser.parse_args()
+    parser.add_argument('--sampling-pool');parser.add_argument('--gap-pool');parser.add_argument('--local-positive-pool');parser.add_argument('--steps',type=int); parser.add_argument('--device',default='cuda');parser.add_argument('--prepare-only',action='store_true'); args=parser.parse_args()
     config=yaml.safe_load(Path(args.config).read_text())
     selection_mode=config.get('checkpoint_selection','bce')
     if selection_mode not in ['bce','native_geometry_v1']:raise ValueError('Unknown checkpoint selection policy')
@@ -47,6 +47,11 @@ def main():
     torch.use_deterministic_algorithms(True); torch.backends.cudnn.benchmark=False
     model=GraphOccupancyAE(**config['model']).to(args.device)
     optimizer=torch.optim.AdamW(model.parameters(),lr=config['lr'],weight_decay=config['weight_decay'])
+    optimizer_ids=[id(p) for group in optimizer.param_groups for p in group['params']]
+    if len(optimizer_ids)!=len(set(optimizer_ids)) or set(optimizer_ids)!={id(p) for p in model.parameters()}:raise ValueError('Incorrect optimizer parameter groups')
+    frozen_names={name for name,p in model.named_parameters() if not p.requires_grad}
+    expected_frozen=set() if model.variational else {'logvar.weight','logvar.bias'}
+    if frozen_names!=expected_frozen:raise ValueError('Unexpected frozen decoder/encoder parameters')
     mode=config.get('inter_anchor_mode')
     if mode is not None:
         if args.sampling_pool is None:raise ValueError('Inter-anchor arms require a frozen training pool')
@@ -61,10 +66,19 @@ def main():
         if sha256(prepared/'train.npz')!=gap_manifest['source_train_sha256'] or sha256(args.gap_pool)!=gap_manifest['gap_pool_sha256'] or splits['train']!=gap_manifest['train_subjects']:raise ValueError('Gap pool/cache mismatch')
         if sha256(args.sampling_pool)!=gap_manifest['positive_pool_sha256']:raise ValueError('Positive intervention changed')
         dataset_class=GapPatchSet;extra=dict(gap_pool=args.gap_pool,gap_mode=config['gap_mode'],gap_replacements=config['gap_replacements'],gap_seed=config['gap_private_seed'])
+    if config.get('local_positive_mode') is not None:
+        from vesseltok.local_positive import LocalPositiveSet,LocalPositiveStreams
+        if config['steps']!=2000 or config.get('gap_replacements')!=16 or config.get('inter_anchor_replacements')!=64 or config.get('local_positive_cap')!=16:raise ValueError('Local-positive experiment budget/caps changed')
+        if config.get('gap_mode')!='replace' or not args.local_positive_pool or config['model'].get('condition_dim',0)!=0:raise ValueError('Local-positive controls require frozen gap setup and no demographic conditioning')
+        local_manifest=json.loads((Path(args.local_positive_pool).parent/'pool_manifest.json').read_text())
+        if sha256(args.local_positive_pool)!=local_manifest['local_positive_pool_sha256'] or local_manifest['train_subjects']!=splits['train'] or local_manifest['source_train_sha256']!=sha256(prepared/'train.npz'):raise ValueError('Local-positive pool/cache mismatch')
+        if sha256(args.gap_pool)!=local_manifest['gap_pool_sha256']:raise ValueError('Local-positive gap pool mismatch')
+        dataset_class=LocalPositiveSet;extra.update(local_pool=args.local_positive_pool,local_mode=config['local_positive_mode'],local_cap=config['local_positive_cap'],local_seed=config['local_positive_seed'])
     train=dataset_class(prepared/'train.npz',config['queries_per_step'],config.get('class_balanced_batches',False),sampling_pool=args.sampling_pool,inter_anchor_mode=mode,replacements=config.get('inter_anchor_replacements',64),private_seed=config.get('inter_anchor_private_seed',9215),**extra)
     validation=PatchSet(prepared/'validation.npz',config['queries_per_step'],config.get('class_balanced_batches',False))
     streams=SamplingStreams() if mode is not None else None
     if config.get('gap_mode') is not None:streams=GapStreams()
+    if config.get('local_positive_mode') is not None:streams=LocalPositiveStreams()
     generator=torch.Generator().manual_seed(seed)
     loader=DataLoader(train,batch_size=config['batch_size'],shuffle=True,num_workers=0,generator=generator)
     iterator=iter(loader)
@@ -81,6 +95,9 @@ def main():
                 'initial_model_sha256':hashlib.sha256(b''.join(key.encode()+value.detach().cpu().numpy().tobytes() for key,value in model.state_dict().items())).hexdigest()}
     if mode is not None:provenance['sampling_intervention']={'mode':mode,'pool_sha256':sha256(args.sampling_pool),'pool_manifest_sha256':sha256(Path(args.sampling_pool).parent/'pool_manifest.json'),'validation_unchanged':True}
     if config.get('gap_mode') is not None:provenance['gap_intervention']={'mode':config['gap_mode'],'pool_sha256':sha256(args.gap_pool),'protocol_sha256':sha256(Path(args.gap_pool).parent/'pool_manifest.json'),'validation_unchanged':True}
+    if config.get('local_positive_mode') is not None:provenance['local_positive_intervention']={'mode':config['local_positive_mode'],'pool_sha256':sha256(args.local_positive_pool),'protocol_sha256':sha256(Path(args.local_positive_pool).parent/'pool_manifest.json'),'validation_unchanged':True,'binary_targets_only':True}
+    provenance['optimizer_parameter_names']=[name for name,p in model.named_parameters() if id(p) in set(optimizer_ids)]
+    provenance['optimizer_frozen_parameter_names']=sorted(frozen_names)
     (root/'config.yaml').write_text(yaml.safe_dump(config));(root/'splits.json').write_text(json.dumps(splits,indent=2));(root/'provenance.json').write_text(json.dumps(provenance,indent=2))
     def checkpoint(step,name):
         torch.save({'model':model.state_dict(),'config':config,'step':step,'splits':splits,'provenance':provenance,

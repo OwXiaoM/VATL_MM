@@ -81,4 +81,7 @@ See DEPENDENCIES.md for attribution and environment details; root context.md
 records the implementation scope and constraints.
 
 
-Read-only break and partial-volume validation tools are described in [VALIDATION.md](VALIDATION.md). Current task status and the pending binary local-positive adapter are recorded in root context.md.
+Read-only break and partial-volume validation tools are described in [VALIDATION.md](VALIDATION.md). Current task status and the binary local-positive adapter are recorded in root context.md.
+
+
+The implemented binary protection sampler and required preflight are documented in [LOCAL_POSITIVE.md](LOCAL_POSITIVE.md).

@@ -1,8 +1,9 @@
 kind: controlled_research_protocol
-status: prepared_not_launched
+status: sampler_implemented_requires_dataset_preflight
 reason: partial_volume_targets_fail_fixed_threshold_topology_gate
 training_config_template: configs/vesseltok/gap16_replace.yaml
-requires_sampler_adapter_and_regression_checks_before_submission: true
+sampler_adapter: vesseltok.local_positive.LocalPositiveSet
+requires_dataset_specific_preflight_before_submission: true
 pseudo_radius_mm: 1.0
 threshold: 0.5
 arms:

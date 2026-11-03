@@ -51,15 +51,37 @@ subvoxel vessels or join narrow gaps;partial-volume soft-target training was NOT
 launched. Numerical sampling refinement was required and validated. Raw experiment
 measurements,subject lists,figures,logs and data stay outside this branch.
 
-NEXT AUTHORIZED TASK (pending implementation at this push):implement the local-
-positive protection sampler and tests,then run a controlled two-arm2000-step pilot
-on allocated Slurm GPUs only after checks pass. Keep16gap negatives and64inter-
-anchor positives identical;only B may reallocate up to16other positives to exact
-binary graph-positive native voxel centers within3mm of gap queries. Keep inputs,
-query/class budget,initialization,BCE,optimizer and model fixed;no transforms or
-demographic conditioning. Freeze rule/unused confirmation cohort before fitting;
-unchanged native_geometry_v1 and threshold.5. No confirmation-guided tuning.
-The adapter did not exist and no such training was submitted before this snapshot.
-configs/vesseltok/local_positive_protocol.yaml records the prepared rule and
-required checks;it is not a loadable training config or a completed experiment.
-Do not start partial-volume training,increase budget or publish experiment outputs.
+## Local-positive protection implementation — 2026-11-03
+
+The previously pending adapter is now implemented as LocalPositiveSet,with paired
+private shadow plans and exact binary native-voxel partner pools. Both arms retain
+16gap negatives and64inter-anchor positive plans;only B reallocates up to16other
+positive slots to graph-positive native voxel centers within3mm of gap queries.
+Missing slots/partners preserve subjects and original queries. Inputs,query/class
+budget,initialization,BCE,optimizer,model and2000-step budget stay fixed;transforms
+and demographics are disabled. No partial-volume training is introduced.
+
+LocalPositiveStreams records matched inputs,negative/inter-anchor/gap queries,
+labels,protection proposals/partners and retained queries. Preparation freezes
+training-only graph/header pools and an unused confirmation cohort before fit.
+Preflight verifies original control sampler hashes,initial weights,final CPU RNG,
+strict partner distances and native-grid binary labels. Native_geometry_v1 and
+threshold.5 remain unchanged. Original AdamW parameter groups are preserved,
+including its intentionally frozen variance head;unexpected frozen/missing/
+duplicate parameters are rejected. Encoder/decoder gradients and short bitwise
+optimizer replay are tested. The control also reproduced the reference final
+model in the completed fixed-budget local pilot.
+
+Both arms completed the authorized2000steps and validation-only checkpoint
+selection. Inference/scoring and detailed results were recorded only in the
+research worktree,not this branch. No confirmation-guided rule/threshold/
+checkpoint change or additional training was performed. A mixed scientific
+outcome does not make the sampler a universally improved default. No anatomical
+radius/SDF,image-only deployment or population-level claim is justified.
+
+This source checkout passes73focused CPU tests. Local full-pipeline regression
+and actual-data preflight records are external. Raw pools,cohort lists,predictions,
+metrics,tables,figures,logs,checkpoints and cached data are excluded from Git.
+See docs/vesseltok/LOCAL_POSITIVE.md for portable preparation/preflight/training
+commands. New data require their own immutable provenance and unused cohorts;
+passing synthetic tests alone never authorizes bypassing dataset-specific checks.
